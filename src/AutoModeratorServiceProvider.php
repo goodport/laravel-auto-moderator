@@ -1,0 +1,28 @@
+<?php
+
+namespace Goodport\AutoModerator;
+
+use Goodport\AutoModerator\Orchestration\ModerationRunner;
+use Goodport\AutoModerator\Profiles\ProfileResolver;
+use Illuminate\Support\ServiceProvider;
+
+final class AutoModeratorServiceProvider extends ServiceProvider
+{
+    public function register(): void
+    {
+        $this->mergeConfigFrom(__DIR__.'/../config/auto-moderator.php', 'auto-moderator');
+
+        $this->app->singleton(ProfileResolver::class);
+        $this->app->singleton(ModerationRunner::class);
+        $this->app->singleton(AutoModeratorManager::class);
+    }
+
+    public function boot(): void
+    {
+        if ($this->app->runningInConsole()) {
+            $this->publishes([
+                __DIR__.'/../config/auto-moderator.php' => config_path('auto-moderator.php'),
+            ], 'auto-moderator-config');
+        }
+    }
+}
