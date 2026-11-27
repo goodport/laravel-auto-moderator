@@ -6,7 +6,7 @@ use Goodport\AutoModerator\Exceptions\InvalidConfigurationException;
 use Goodport\AutoModerator\Support\SettingsGuard;
 
 /**
- * Resolved settings for the AI policy adapter.
+ * Resolved settings for the AI adapter.
  */
 final readonly class AiSettings
 {
@@ -14,7 +14,8 @@ final readonly class AiSettings
      * @param  array<int, string>  $fields
      */
     private function __construct(
-        public string $policy,
+        public AiMode $mode,
+        public string $key,
         public array $fields,
         public ?string $language,
     ) {}
@@ -24,11 +25,50 @@ final readonly class AiSettings
      */
     public static function fromArray(array $settings, string $check): self
     {
-        SettingsGuard::guardKeys($check, $settings, ['policy', 'fields', 'language']);
+        SettingsGuard::guardKeys($check, $settings, ['check', 'policy', 'fields', 'language']);
 
-        $policy = $settings['policy'] ?? null;
+        $hasCheck = array_key_exists('check', $settings);
+        $hasPolicy = array_key_exists('policy', $settings);
 
-        if (! is_string($policy) || trim($policy) === '') {
+        if ($hasCheck && $hasPolicy) {
+            throw InvalidConfigurationException::invalidSetting(
+                $check,
+                '`check` and `policy` cannot be used together.',
+            );
+        }
+
+        if (! $hasCheck && ! $hasPolicy) {
+            throw InvalidConfigurationException::invalidSetting(
+                $check,
+                'one of `check` or `policy` is required.',
+            );
+        }
+
+        $language = SettingsGuard::optionalString($check, $settings, 'language');
+
+        if ($hasCheck) {
+            if (array_key_exists('fields', $settings)) {
+                throw InvalidConfigurationException::invalidSetting(
+                    $check.'.fields',
+                    'is not allowed when `check` is used; the AI check declares its own fields.',
+                );
+            }
+
+            $key = $settings['check'];
+
+            if (! is_string($key) || trim($key) === '') {
+                throw InvalidConfigurationException::invalidSetting(
+                    $check.'.check',
+                    'must be a non-empty AI check key.',
+                );
+            }
+
+            return new self(AiMode::Check, trim($key), [], $language);
+        }
+
+        $key = $settings['policy'];
+
+        if (! is_string($key) || trim($key) === '') {
             throw InvalidConfigurationException::invalidSetting(
                 $check.'.policy',
                 'must be a non-empty policy key.',
@@ -36,9 +76,10 @@ final readonly class AiSettings
         }
 
         return new self(
-            policy: $policy,
+            mode: AiMode::Policy,
+            key: trim($key),
             fields: SettingsGuard::stringList($check, $settings, 'fields', true),
-            language: SettingsGuard::optionalString($check, $settings, 'language'),
+            language: $language,
         );
     }
 }

@@ -4,8 +4,10 @@ Synchronous content moderation profiles for Laravel applications.
 
 The package runs an ordered list of checks over named input fields, collects one
 report, and returns a final state: `passed`, `rejected`, `undecided`, or
-`skipped`. It stores nothing, knows nothing about your models, and never reads
-the current request, the authenticated user, or the application locale.
+`skipped`. It stores nothing and knows nothing about your models. The run
+context uses the authenticated user and the current request URL by default, and
+falls back to the application locale for the language; each value can be
+overridden per run.
 
 ## Requirements
 
@@ -15,9 +17,9 @@ the current request, the authenticated user, or the application locale.
 - a database connection for the AI moderator audit table when the AI check is
   used (see below).
 
-The package depends on `goodport/laravel-ai-moderator` for AI policies and on
-`consoletvs/profanity` for profanity dictionaries. It has no migrations, models,
-statuses, queues, translations, or admin screens of its own.
+The package depends on `goodport/laravel-ai-moderator` for AI checks and
+policies and on `consoletvs/profanity` for profanity dictionaries. It has no
+migrations, models, statuses, queues, translations, or admin screens of its own.
 
 ## Installation
 
@@ -52,9 +54,18 @@ PERSPECTIVE_API_KEY=your-key
 
 ## Quick start
 
-Define a profile in `config/auto-moderator.php`:
+Define the AI check instance and a profile in `config/auto-moderator.php`.
+The examples assume `AiModerationCheck` is imported with
+`use Goodport\AutoModerator\Checks\Ai\AiModerationCheck;`.
 
 ```php
+'checks' => [
+    'ai_text_name' => [
+        'class' => AiModerationCheck::class,
+        'settings' => ['check' => 'text_name'],
+    ],
+],
+
 'profiles' => [
     'post' => [
         'enabled' => true,
@@ -78,7 +89,6 @@ Define a profile in `config/auto-moderator.php`:
                 'check' => 'language',
                 'settings' => [
                     'fields' => ['body'],
-                    'language' => 'en',
                     'min_length' => 20,
                     'threshold' => 0.6,
                 ],
@@ -87,16 +97,11 @@ Define a profile in `config/auto-moderator.php`:
                 'check' => 'toxicity',
                 'settings' => [
                     'fields' => ['body'],
-                    'language' => 'en',
                     'threshold' => 0.7,
                 ],
             ],
             [
-                'check' => 'ai',
-                'settings' => [
-                    'policy' => 'post',
-                    'fields' => ['body'],
-                ],
+                'check' => 'ai_text_name',
             ],
         ],
     ],
@@ -107,21 +112,14 @@ Run the profile:
 
 ```php
 use Goodport\AutoModerator\Facades\AutoModerator;
-use Goodport\AutoModerator\Moderation\AuditContext;
 
 $report = AutoModerator::profile('post')
     ->input([
         'title' => $post->title,
         'body' => $post->body,
     ])
+    ->subject($post)
     ->language('en')
-    ->audit(new AuditContext(
-        actorType: 'user',
-        actorId: (string) $user->id,
-        subjectType: 'post',
-        subjectId: (string) $post->id,
-        requestUrl: request()->fullUrl(),
-    ))
     ->run();
 
 if ($report->rejected()) {
@@ -132,6 +130,52 @@ if ($report->undecided()) {
     // The result is not an approval. Retry, queue, or ask for a manual review.
 }
 ```
+
+The actor defaults to `Auth::user()`. The run language is resolved from
+`->language()`, the check `language` setting, then `app()->getLocale()`. The
+audit URL comes from the current request. Use explicit calls to override the
+defaults:
+
+```php
+use Goodport\AutoModerator\Moderation\AuditContext;
+
+$report = AutoModerator::profile('post')
+    ->input(['body' => $post->body])
+    ->subject($post)
+    ->language('en')
+    ->audit(new AuditContext(
+        actorType: 'user',
+        actorId: (string) $user->id,
+        subjectType: 'post',
+        subjectId: (string) $post->id,
+        requestUrl: request()->fullUrl(),
+    ))
+    ->run();
+```
+
+## Run context
+
+By default, each run uses:
+
+- the actor from `Auth::user()`;
+- the request URL from `request()->fullUrl()`;
+- the language fallback from `app()->getLocale()`;
+- no subject.
+
+The run language is resolved in this order: `->language()`, the check
+`language` setting, then `app()->getLocale()`.
+
+`->actor($model)`, `->subject($model)`, `->language($locale)`, and
+`->audit($context)` override these values. The actor accepts an Eloquent model
+or any `Authenticatable`; the subject accepts an Eloquent model.
+
+`auto-moderator.audit.enabled` (default `true`) controls the automatic audit
+context. When it is disabled, no automatic context is built, but an explicit
+`->audit()` still works. An explicit `->audit()` replaces the automatic context
+entirely.
+
+The package does not persist the context. The AI check forwards it to the AI
+moderator audit table.
 
 ## Result semantics
 
@@ -155,6 +199,7 @@ $report->undecided();    // bool
 $report->allSkipped();   // bool
 $report->results();      // array<string, CheckResult>
 $report->result('ai');   // ?CheckResult
+$report->firstReason();  // ?string: first rejected/undecided reason or error
 $report->messages();     // reasons and errors for checks that did not pass
 $report->violations();  // blocking findings grouped by check
 $report->warnings();    // non-blocking findings grouped by check
@@ -165,6 +210,10 @@ $report->toArray();     // full array representation
 `CheckResult` exposes `check`, `state`, `reason`, `findings`, `details`, and
 `error`. A `Finding` exposes `code`, `message`, `severity`, `blocking`, and
 `details`.
+
+`firstReason()` returns the first reason or error from a rejected or undecided
+check. Passed and skipped checks are ignored. It returns `null` when no check is
+rejected or undecided.
 
 ## Profiles
 
@@ -177,7 +226,7 @@ A profile is an ordered list. The list order is the execution order.
         'stop_on_reject' => false,
         'checks' => [
             ['check' => 'stop_words', 'settings' => ['fields' => ['body'], 'words' => ['example']]],
-            ['check' => 'ai', 'settings' => ['policy' => 'post', 'fields' => ['body']]],
+            ['check' => 'ai_text_name'],
         ],
     ],
 ],
@@ -268,11 +317,12 @@ language in `details.matched_words`.
 ],
 ```
 
-The check counts letters that belong to the expected alphabet. `language` is
-the default; `->language()` overrides it. An unknown language without a
-configured alphabet is a configuration error. Text shorter than `min_length` or
-without letters is skipped. Each field reports its `letters`, `matching`, and
-`ratio` in `details.fields`.
+The check counts letters that belong to the expected alphabet. The run language
+is resolved from `->language()`, the check `language` setting, then
+`app()->getLocale()`. An unknown language without a configured alphabet is a
+configuration error. Text shorter than `min_length` or without letters is
+skipped. Each field reports its `letters`, `matching`, and `ratio` in
+`details.fields`.
 
 The default alphabets are `en` and `ru`. Add or override them in the registry
 settings:
@@ -307,8 +357,9 @@ settings:
 Text longer than `max_chars` is truncated before it is sent. The default is
 10000 characters. Truncated fields are listed in `details.truncated`.
 
-The check calls the Perspective API through the Laravel HTTP client. Connection
-settings live in `services.perspective`:
+The check calls the Perspective API through the Laravel HTTP client. The run
+language is resolved from `->language()`, the check `language` setting, then
+`app()->getLocale()`. Connection settings live in `services.perspective`:
 
 ```php
 'services' => [
@@ -326,25 +377,35 @@ Scores are returned in `details.scores`.
 
 ### AI moderation
 
+A direct AI check is the preferred mode for one AI check. Describe the check
+once in `config/ai-moderator.php` and reference it from the auto moderator
+registry:
+
 ```php
-[
-    'check' => 'ai',
-    'settings' => [
-        'policy' => 'post',
-        'fields' => ['body'],
+'checks' => [
+    'ai_text_name' => [
+        'class' => AiModerationCheck::class,
+        'settings' => ['check' => 'text_name'],
+    ],
+],
+'profiles' => [
+    'post' => [
+        'checks' => [
+            ['check' => 'ai_text_name'],
+        ],
     ],
 ],
 ```
 
-Define the policy and its checks in `config/ai-moderator.php`:
+`config/ai-moderator.php` contains the check itself:
 
 ```php
 'checks' => [
-    'post_body' => [
+    'text_name' => [
         'kind' => 'verdict',
         'input' => [
             'fields' => [
-                'body' => ['type' => 'text', 'label' => 'Body', 'max_chars' => 4000],
+                'text' => ['type' => 'text', 'label' => 'Name', 'max_chars' => 4000],
             ],
         ],
         'instructions' => 'Reject profanity, contact details, and advertising.',
@@ -355,23 +416,78 @@ Define the policy and its checks in `config/ai-moderator.php`:
         ],
     ],
 ],
-'policies' => [
-    'post' => ['checks' => ['post_body']],
+```
+
+In direct mode:
+
+- do not set `fields` in the auto moderator settings;
+- the whole input array is passed to the AI check;
+- the AI check selects its declared fields and ignores extra fields;
+- the AI check key is written to the audit context as `policy`;
+- the check result contains `details.check` and `details.result`.
+
+Several AI checks can run in one profile through different registry keys:
+
+```php
+'checks' => [
+    'ai_text_name' => [
+        'class' => AiModerationCheck::class,
+        'settings' => ['check' => 'text_name'],
+    ],
+    'ai_text_body' => [
+        'class' => AiModerationCheck::class,
+        'settings' => ['check' => 'text_body'],
+    ],
+],
+'profiles' => [
+    'post' => [
+        'checks' => [
+            ['check' => 'ai_text_name'],
+            ['check' => 'ai_text_body'],
+        ],
+    ],
 ],
 ```
 
-The field names in the AI check settings must match the fields declared by the
-AI policy checks. The adapter does not rebuild prompts or schemas; it forwards
-the declared fields, the resolved language, and the audit context to the ready
-policy and maps its report.
+Policy mode remains available for group scenarios:
 
-- A policy where every check is skipped becomes `skipped`, not `passed`.
+```php
+[
+    'check' => 'ai',
+    'settings' => [
+        'policy' => 'post',
+        'fields' => ['body'],
+    ],
+],
+```
+
+Policy mode also needs the policy declaration in `config/ai-moderator.php`:
+
+```php
+'policies' => [
+    'post' => ['checks' => ['text_name', 'text_body']],
+],
+```
+
+Exactly one of `check` or `policy` is required. `fields` is required in policy
+mode and forbidden in direct mode. An empty key, both keys, or `fields` in
+direct mode is a configuration error. An unknown AI check or policy key is also
+a configuration error.
+
+The adapter does not rebuild prompts or schemas. It forwards input, language,
+and audit context, then maps the AI result or report. The run language is
+resolved from `->language()`, the check `language` setting, then
+`app()->getLocale()`.
+
+- A direct check or policy where every AI result is skipped becomes `skipped`,
+  not `passed`.
 - AI violations become findings. Reasons, labels, answers, and errors are kept
-  in `details.checks`.
+  in `details` (`details.result` for direct mode, `details.checks` for policy
+  mode).
 - AI configuration and input errors throw. Provider failures are normalized to
   `undecided`.
 - The AI check does not accept a `blocking` setting; violation blocking belongs
-  to the AI policy.
+  to the AI check or policy.
 
 ## Custom checks
 
@@ -472,8 +588,9 @@ inconsistent result throws `InvalidCheckResultException`.
   and notifications belong to the application.
 - The package has no models, migrations, translations, or admin interface.
 - The AI dependency writes its own audit and journal tables. Run its migrations.
-- The package never reads the current request, `Auth`, or `App::getLocale()`.
-  Pass input, language, and audit context explicitly.
+- The run context factory reads `Auth`, the current request, and the application
+  locale by default. Checks never read them directly. Pass explicit overrides
+  when the defaults are not suitable, for example in background jobs.
 
 ## Development
 

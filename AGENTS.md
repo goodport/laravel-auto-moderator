@@ -8,10 +8,11 @@ The package is a synchronous content moderation orchestrator:
 
 1. read a profile and its ordered check list;
 2. resolve registered checks and merge registry defaults with profile settings;
-3. build one `ModerationContext` per check;
-4. run checks in order and stop after the first rejection when configured;
-5. aggregate results into one `Report`;
-6. return `passed`, `rejected`, `undecided`, or `skipped`.
+3. resolve the run language and build the audit context from the Laravel environment;
+4. build one `ModerationContext` per check;
+5. run checks in order and stop after the first rejection when configured;
+6. aggregate results into one `Report`;
+7. return `passed`, `rejected`, `undecided`, or `skipped`.
 
 The package owns no models, migrations, statuses, queues, translations, admin
 screens, or persistence. The AI check delegates the AI pipeline to
@@ -25,7 +26,7 @@ config/auto-moderator.php              publishable configuration
 src/
   AutoModeratorManager.php             facade entry point
   AutoModeratorServiceProvider.php     config merge, bindings, config publishing
-  PendingProfile.php                   fluent input/language/audit/run
+  PendingProfile.php                   fluent input/language/actor/subject/audit/run
   Facades/AutoModerator.php            facade accessor
   Contracts/
     ModerationCheck.php                check contract
@@ -52,7 +53,7 @@ src/
     Profanity/                         dictionary languages and wrapper
     Language/                          alphabet ratio check
     Toxicity/                          Perspective API adapter
-    Ai/                                AI policy adapter and report mapper
+    Ai/                                direct check / policy adapter and mapper
   Profiles/
     ProfileConfig.php                  validated profile DTO
     ProfileConfigReader.php            profile structure and defaults validation
@@ -62,6 +63,7 @@ src/
     ResolvedCheck.php                  executable check entry
   Orchestration/
     ModerationRunner.php               ordered execution and aggregation
+    RunContextFactory.php              default actor, request URL, language, audit
 tests/
   TestCase.php                         Testbench base with AI providers and SQLite
   Fixtures/                            custom check and service fixtures
@@ -76,20 +78,21 @@ use Goodport\AutoModerator\Facades\AutoModerator;
 
 $report = AutoModerator::profile('post')
     ->input(['body' => $body])
-    ->language('en')
-    ->audit(new AuditContext(...))
+    ->subject($post)
     ->run();
 ```
 
 - `AutoModerator::profile(string $profile): PendingProfile`
 - `PendingProfile::input(array $fields): self`
 - `PendingProfile::language(string $language): self`
+- `PendingProfile::actor(Model|Authenticatable $actor): self`
+- `PendingProfile::subject(Model $subject): self`
 - `PendingProfile::audit(AuditContext $audit): self`
 - `PendingProfile::run(): Report`
 
 `Report` exposes `state()`, `passed()`, `rejected()`, `undecided()`,
-`allSkipped()`, `results()`, `result()`, `messages()`, `violations()`,
-`warnings()`, `findings()`, and `toArray()`.
+`allSkipped()`, `results()`, `result()`, `firstReason()`, `messages()`,
+`violations()`, `warnings()`, `findings()`, and `toArray()`.
 
 `CheckResult` exposes `check`, `state`, `reason`, `findings`, `details`, and
 `error`, plus `passed()`, `rejected()`, `undecided()`, `skipped()`, and
@@ -111,6 +114,14 @@ $report = AutoModerator::profile('post')
   profiles produce `skipped` entries without resolving a class or settings.
 - Checks receive merged settings in `ModerationContext->settings`. Checks must
   not read configuration directly.
+- `RunContextFactory` resolves the fallback language and the default audit
+  context. `auto-moderator.audit.enabled` controls the automatic audit.
+  Explicit `->language()` and `->audit()` calls override the defaults.
+- The run language is resolved from `->language()`, the check `language`
+  setting, then `app()->getLocale()`. The default audit actor is `Auth::user()`,
+  the request URL is `request()->fullUrl()`, and the subject is the explicit
+  `->subject()` model. An Eloquent actor uses `getMorphClass()`/`getKey()`;
+  another `Authenticatable` uses its class and `getAuthIdentifier()`.
 
 Merge rules: associative maps merge recursively; lists replace as a whole.
 Unknown profile, entry, registry, and settings keys are configuration errors.
@@ -129,6 +140,9 @@ Unknown profile, entry, registry, and settings keys are configuration errors.
 - Configuration and input errors throw.
 - The AI adapter deliberately detects the case where every AI result is
   skipped, because the AI report treats that case as passed.
+- `Report::firstReason()` returns the first reason or error from a rejected or
+  undecided check. Passed and skipped checks are ignored; otherwise it returns
+  `null`.
 
 ## Extension points
 
@@ -138,12 +152,15 @@ Unknown profile, entry, registry, and settings keys are configuration errors.
   - `enabled` — global switch;
   - `defaults` — shared profile defaults;
   - `checks` — registry key → class + default settings;
+  - `audit` — automatic audit switch;
   - `services` — named external service settings;
   - `profiles` — ordered check lists.
-- `Checks\Ai\AiModerationCheck` — a single AI policy adapter. The policy itself
-  is defined in `config/ai-moderator.php`.
+- `Checks\Ai\AiModerationCheck` — a direct AI check or policy adapter. The check
+  or policy itself is defined in `config/ai-moderator.php`.
 - `Moderation\AuditContext` — neutral audit context mapped to the AI
   moderator DTO inside the AI check.
+- `Orchestration\RunContextFactory` — the only place that reads `Auth`, the
+  current request, and the application locale.
 
 ## Built-in checks
 
@@ -159,8 +176,10 @@ Unknown profile, entry, registry, and settings keys are configuration errors.
   `blocking`. Text longer than `max_chars` is truncated before the request.
   Connection settings live in `services.perspective`. Missing key, HTTP errors,
   and malformed responses are handled explicitly; failures are `undecided`.
-- AI: required `policy`, required `fields`, optional `language`. No `blocking`
-  setting. The AI report drives the state and findings.
+- AI: exactly one of `check` or `policy`, optional `language`. Direct `check`
+  must not set `fields`; the AI check declares its own fields. Policy mode
+  requires `fields`. No `blocking` setting. The AI result or report drives the
+  state and findings. Direct mode writes the AI check key as the audit policy.
 
 ## Tests
 
@@ -172,8 +191,9 @@ composer validate --strict
 
 Tests use PHPUnit and Orchestra Testbench. Feature tests cover profile order,
 stop-on-reject, warnings, all-skipped, every built-in check, a custom check,
-AI fake agents, Perspective HTTP fakes, and configuration/input errors. Unit
-tests cover report aggregation, result invariants, and config merging.
+direct and policy AI checks, AI fake agents, Perspective HTTP fakes, automatic
+run context, and configuration/input errors. Unit tests cover report
+aggregation, result invariants, single AI result mapping, and config merging.
 
 The base test case registers the AI, journal, resilience, AI moderator, and
 auto moderator providers and uses an in-memory SQLite database for the AI
@@ -183,11 +203,11 @@ dependency tables.
 
 - Do not add models, migrations, statuses, queues, translations, admin screens,
   or browser tests.
-- Do not copy AI moderator internals. Use its public policy, report, and audit
-  API only.
+- Do not copy AI moderator internals. Use its public check, policy, report, and
+  audit API only.
 - Do not add a built-in stop word list.
-- Do not read `config()`, `Auth`, the current request, or `App::getLocale()`
-  inside checks.
+- Do not read `config()` inside checks. The run context factory is the only
+  place that reads `Auth`, the current request, or `App::getLocale()`.
 - Do not treat `undecided` as approval.
 - Keep public documentation and code comments in English.
 - Update this file and `README.md` when the public API or configuration changes.

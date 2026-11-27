@@ -36,6 +36,21 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Automatic audit
+    |--------------------------------------------------------------------------
+    |
+    | When enabled, the package builds an audit context from the authenticated
+    | user, the current request URL, and the optional actor and subject passed
+    | to the profile. An explicit audit() call always overrides this context.
+    |
+    */
+
+    'audit' => [
+        'enabled' => true,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Check registry
     |--------------------------------------------------------------------------
     |
@@ -123,7 +138,7 @@ return [
     |     'stop_on_reject' => false,
     |     'checks' => [
     |         ['check' => 'stop_words', 'settings' => ['fields' => ['body'], 'words' => ['example']]],
-    |         ['check' => 'ai', 'settings' => ['policy' => 'post', 'fields' => ['body']]],
+    |         ['check' => 'ai_text_name'],
     |     ],
     | ],
     |

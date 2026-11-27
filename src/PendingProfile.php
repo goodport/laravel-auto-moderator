@@ -6,7 +6,10 @@ use Goodport\AutoModerator\Exceptions\InvalidInputException;
 use Goodport\AutoModerator\Moderation\AuditContext;
 use Goodport\AutoModerator\Moderation\Report;
 use Goodport\AutoModerator\Orchestration\ModerationRunner;
+use Goodport\AutoModerator\Orchestration\RunContextFactory;
 use Goodport\AutoModerator\Profiles\ProfileResolver;
+use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Database\Eloquent\Model;
 
 /**
  * Fluent moderation profile run.
@@ -22,10 +25,15 @@ final class PendingProfile
 
     private ?AuditContext $audit = null;
 
+    private Model|Authenticatable|null $actor = null;
+
+    private ?Model $subject = null;
+
     public function __construct(
         private readonly string $profile,
         private readonly ProfileResolver $resolver,
         private readonly ModerationRunner $runner,
+        private readonly RunContextFactory $contextFactory,
     ) {}
 
     /**
@@ -41,7 +49,7 @@ final class PendingProfile
     }
 
     /**
-     * Override the language configured on checks.
+     * Override the default application language.
      */
     public function language(string $language): self
     {
@@ -55,7 +63,27 @@ final class PendingProfile
     }
 
     /**
-     * Attach audit context to the run.
+     * Set the actor used by the automatic audit context.
+     */
+    public function actor(Model|Authenticatable $actor): self
+    {
+        $this->actor = $actor;
+
+        return $this;
+    }
+
+    /**
+     * Set the subject used by the automatic audit context.
+     */
+    public function subject(Model $subject): self
+    {
+        $this->subject = $subject;
+
+        return $this;
+    }
+
+    /**
+     * Override the automatic audit context.
      */
     public function audit(AuditContext $audit): self
     {
@@ -70,7 +98,8 @@ final class PendingProfile
             profile: $this->resolver->resolve($this->profile),
             fields: $this->fields,
             language: $this->language,
-            audit: $this->audit,
+            defaultLanguage: $this->contextFactory->defaultLanguage(),
+            audit: $this->contextFactory->audit($this->audit, $this->actor, $this->subject),
         );
     }
 }

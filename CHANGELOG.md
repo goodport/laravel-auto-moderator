@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-27
+
+### Added
+
+- Direct AI check mode through `AiModerator::check()`. The AI check declares its
+  fields only in `config/ai-moderator.php`; the adapter passes the whole input,
+  writes the AI check key as the audit policy, and supports several AI checks in
+  one profile through different registry keys.
+- Automatic run context: the authenticated user and request URL by default;
+  language precedence from `->language()`, the check `language` setting, then
+  `app()->getLocale()`; explicit `->actor()` and `->subject()`; configurable
+  automatic audit through `auto-moderator.audit`; explicit `->audit()` override.
+- `Report::firstReason()` for the first rejected or undecided reason or error.
+- Direct and policy AI tests, automatic context tests, and single-result mapper
+  tests.
+
+### Changed
+
+- AI settings must contain exactly one of `check` or `policy`. `fields` is
+  forbidden in direct mode and required in policy mode.
+- The AI mapper now exposes `mapReport()` and `mapResult()`.
+- README and AGENTS describe the new run defaults and no longer claim that the
+  package never reads `Auth`, the request, or the application locale.
+
 ## [1.0.0] - 2026-11-26
 
 ### Added

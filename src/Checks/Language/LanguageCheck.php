@@ -14,8 +14,8 @@ use Goodport\AutoModerator\Support\TextFields;
 /**
  * Checks the ratio of characters that belong to the expected alphabet.
  *
- * The expected language comes from the check settings or from ->language().
- * The package never falls back to the application locale.
+ * The run language is resolved by the runner from ->language(), the check
+ * language setting, and the application locale fallback.
  */
 final class LanguageCheck implements ModerationCheck, ValidatesSettings
 {

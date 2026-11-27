@@ -72,6 +72,26 @@ final readonly class Report
     }
 
     /**
+     * The first reason or error from a rejected or undecided check.
+     */
+    public function firstReason(): ?string
+    {
+        foreach ($this->results as $result) {
+            if ($result->state !== ModerationState::Rejected && $result->state !== ModerationState::Undecided) {
+                continue;
+            }
+
+            $reason = $result->reason ?? $result->error;
+
+            if ($reason !== null) {
+                return $reason;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Reasons and errors for checks that did not pass.
      *
      * @return array<string, string>
@@ -145,6 +165,7 @@ final readonly class Report
             'undecided' => $this->undecided(),
             'all_skipped' => $this->allSkipped(),
             'results' => array_map(fn (CheckResult $result): array => $result->toArray(), $this->results),
+            'first_reason' => $this->firstReason(),
             'messages' => $this->messages(),
             'violations' => $this->findingsToArray($this->violations()),
             'warnings' => $this->findingsToArray($this->warnings()),

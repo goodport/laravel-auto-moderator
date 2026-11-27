@@ -206,31 +206,78 @@ final class ToxicityTest extends TestCase
     }
 
     /**
-     * The check requires a language.
+     * The application locale is the fallback language.
      */
-    public function test_missing_language_throws(): void
+    public function test_uses_app_locale_by_default(): void
     {
+        $this->app->setLocale('ru');
         $this->configure();
-
-        $this->expectException(InvalidConfigurationException::class);
+        $this->fakeScore(0.1);
 
         AutoModerator::profile('post')
             ->input(['body' => 'Hello'])
             ->run();
+
+        Http::assertSent(function (Request $request): bool {
+            return $request['languages'] === ['ru'];
+        });
     }
 
-    private function configure(int $maxChars = 10000): void
+    /**
+     * The check language setting wins over the application locale.
+     */
+    public function test_uses_check_language_before_app_locale(): void
     {
+        $this->app->setLocale('en');
+        $this->configure(language: 'ru');
+        $this->fakeScore(0.1);
+
+        AutoModerator::profile('post')
+            ->input(['body' => 'Hello'])
+            ->run();
+
+        Http::assertSent(function (Request $request): bool {
+            return $request['languages'] === ['ru'];
+        });
+    }
+
+    /**
+     * The explicit language overrides the check setting.
+     */
+    public function test_run_language_overrides_check_language(): void
+    {
+        $this->app->setLocale('en');
+        $this->configure(language: 'ru');
+        $this->fakeScore(0.1);
+
+        AutoModerator::profile('post')
+            ->input(['body' => 'Hello'])
+            ->language('en')
+            ->run();
+
+        Http::assertSent(function (Request $request): bool {
+            return $request['languages'] === ['en'];
+        });
+    }
+
+    private function configure(int $maxChars = 10000, ?string $language = null): void
+    {
+        $settings = [
+            'fields' => ['body'],
+            'threshold' => 0.7,
+            'max_chars' => $maxChars,
+        ];
+
+        if ($language !== null) {
+            $settings['language'] = $language;
+        }
+
         $this->setPerspectiveService();
         $this->setProfile('post', [
             'checks' => [
                 [
                     'check' => 'toxicity',
-                    'settings' => [
-                        'fields' => ['body'],
-                        'threshold' => 0.7,
-                        'max_chars' => $maxChars,
-                    ],
+                    'settings' => $settings,
                 ],
             ],
         ]);

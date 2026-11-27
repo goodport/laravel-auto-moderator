@@ -189,17 +189,64 @@ final class AiTest extends TestCase
     }
 
     /**
-     * The AI check requires a language.
+     * The application locale is the fallback language.
      */
-    public function test_missing_language_throws(): void
+    public function test_uses_app_locale_by_default(): void
     {
+        $this->app->setLocale('ru');
         $this->configureAi();
-
-        $this->expectException(InvalidConfigurationException::class);
+        ModerationAgent::fake([
+            ['verdict' => 'approve', 'reason' => 'Fine.', 'violations' => []],
+        ]);
 
         AutoModerator::profile('post')
             ->input(['body' => 'Hello'])
             ->run();
+
+        ModerationAgent::assertPrompted(function (AgentPrompt $prompt): bool {
+            return str_contains((string) $prompt->agent->instructions(), 'Russian');
+        });
+    }
+
+    /**
+     * The check language setting wins over the application locale.
+     */
+    public function test_uses_check_language_before_app_locale(): void
+    {
+        $this->app->setLocale('en');
+        $this->configureAi(language: 'ru');
+        ModerationAgent::fake([
+            ['verdict' => 'approve', 'reason' => 'Fine.', 'violations' => []],
+        ]);
+
+        AutoModerator::profile('post')
+            ->input(['body' => 'Hello'])
+            ->run();
+
+        ModerationAgent::assertPrompted(function (AgentPrompt $prompt): bool {
+            return str_contains((string) $prompt->agent->instructions(), 'Russian');
+        });
+    }
+
+    /**
+     * The explicit language overrides the check setting.
+     */
+    public function test_run_language_overrides_check_language(): void
+    {
+        $this->app->setLocale('en');
+        $this->configureAi(language: 'ru');
+        ModerationAgent::fake([
+            ['verdict' => 'approve', 'reason' => 'Fine.', 'violations' => []],
+        ]);
+
+        AutoModerator::profile('post')
+            ->input(['body' => 'Hello'])
+            ->language('en')
+            ->run();
+
+        ModerationAgent::assertPrompted(function (AgentPrompt $prompt): bool {
+            return str_contains((string) $prompt->agent->instructions(), 'English');
+        });
     }
 
     /**
@@ -243,7 +290,7 @@ final class AiTest extends TestCase
             ->run();
     }
 
-    private function configureAi(): void
+    private function configureAi(?string $language = null): void
     {
         $this->setAiCheck('post_body', [
             'kind' => 'verdict',
@@ -258,14 +305,21 @@ final class AiTest extends TestCase
             ],
         ]);
         $this->setAiPolicy('post', ['checks' => ['post_body']]);
+
+        $settings = [
+            'policy' => 'post',
+            'fields' => ['body'],
+        ];
+
+        if ($language !== null) {
+            $settings['language'] = $language;
+        }
+
         $this->setProfile('post', [
             'checks' => [
                 [
                     'check' => 'ai',
-                    'settings' => [
-                        'policy' => 'post',
-                        'fields' => ['body'],
-                    ],
+                    'settings' => $settings,
                 ],
             ],
         ]);

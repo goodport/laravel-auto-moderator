@@ -12,19 +12,25 @@ use Goodport\AutoModerator\Moderation\FindingSeverity;
 use Goodport\AutoModerator\Moderation\ModerationState;
 
 /**
- * Converts an AI moderator report into the package result.
+ * Converts AI results into package check results.
  *
- * The AI report treats a run where every check was skipped as passed. This
- * mapper detects that case separately and returns skipped instead.
+ * The policy report treats a run where every check was skipped as passed. The
+ * report mapper detects that case separately and returns skipped instead.
  */
 final class AiReportMapper
 {
-    public static function map(string $check, string $policy, AiReport $report): CheckResult
+    public static function mapReport(string $check, string $policy, AiReport $report): CheckResult
     {
         $results = $report->results();
         $state = self::state(array_values($results));
-        $findings = self::findings($results);
-        $details = self::details($policy, $results);
+        $findings = self::findingsFromResults($results);
+        $details = [
+            'policy' => $policy,
+            'checks' => array_map(
+                fn (AiResult $result): array => self::resultDetails($result),
+                $results,
+            ),
+        ];
 
         return match ($state) {
             ModerationState::Rejected => CheckResult::rejectedResult(
@@ -42,6 +48,33 @@ final class AiReportMapper
             ),
             ModerationState::Skipped => CheckResult::skippedResult($check, details: $details),
             ModerationState::Passed => CheckResult::passedResult($check, $findings, $details),
+        };
+    }
+
+    public static function mapResult(string $check, string $aiCheck, AiResult $result): CheckResult
+    {
+        $findings = self::findingsFromResult($aiCheck, $result);
+        $details = [
+            'check' => $aiCheck,
+            'result' => self::resultDetails($result),
+        ];
+
+        return match ($result->state) {
+            AiState::Rejected => CheckResult::rejectedResult(
+                check: $check,
+                reason: $result->reason ?? 'AI moderation rejected the content.',
+                findings: $findings,
+                details: $details,
+            ),
+            AiState::Undecided => CheckResult::undecidedResult(
+                check: $check,
+                error: $result->meta->error ?? $result->reason ?? 'AI moderation could not decide.',
+                reason: $result->reason,
+                findings: $findings,
+                details: $details,
+            ),
+            AiState::Skipped => CheckResult::skippedResult($check, details: $details),
+            AiState::Passed => CheckResult::passedResult($check, $findings, $details),
         };
     }
 
@@ -77,20 +110,32 @@ final class AiReportMapper
      * @param  array<string, AiResult>  $results
      * @return array<int, Finding>
      */
-    private static function findings(array $results): array
+    private static function findingsFromResults(array $results): array
     {
         $findings = [];
 
         foreach ($results as $check => $result) {
-            foreach ($result->violations as $violation) {
-                $findings[] = new Finding(
-                    code: $violation->code,
-                    message: $violation->message,
-                    severity: self::severity($violation->severity),
-                    blocking: $violation->blocking,
-                    details: ['check' => $check],
-                );
-            }
+            $findings = array_merge($findings, self::findingsFromResult($check, $result));
+        }
+
+        return $findings;
+    }
+
+    /**
+     * @return array<int, Finding>
+     */
+    private static function findingsFromResult(string $aiCheck, AiResult $result): array
+    {
+        $findings = [];
+
+        foreach ($result->violations as $violation) {
+            $findings[] = new Finding(
+                code: $violation->code,
+                message: $violation->message,
+                severity: self::severity($violation->severity),
+                blocking: $violation->blocking,
+                details: ['check' => $aiCheck],
+            );
         }
 
         return $findings;
@@ -134,24 +179,17 @@ final class AiReportMapper
     }
 
     /**
-     * @param  array<string, AiResult>  $results
      * @return array<string, mixed>
      */
-    private static function details(string $policy, array $results): array
+    private static function resultDetails(AiResult $result): array
     {
         return [
-            'policy' => $policy,
-            'checks' => array_map(
-                fn (AiResult $result): array => [
-                    'state' => $result->state->value,
-                    'reason' => $result->reason,
-                    'label' => $result->label,
-                    'answers' => $result->answers,
-                    'details' => $result->details,
-                    'error' => $result->meta->error,
-                ],
-                $results,
-            ),
+            'state' => $result->state->value,
+            'reason' => $result->reason,
+            'label' => $result->label,
+            'answers' => $result->answers,
+            'details' => $result->details,
+            'error' => $result->meta->error,
         ];
     }
 }

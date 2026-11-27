@@ -3,6 +3,7 @@
 namespace Goodport\AutoModerator;
 
 use Goodport\AutoModerator\Orchestration\ModerationRunner;
+use Goodport\AutoModerator\Orchestration\RunContextFactory;
 use Goodport\AutoModerator\Profiles\ProfileResolver;
 
 /**
@@ -13,10 +14,11 @@ final class AutoModeratorManager
     public function __construct(
         private readonly ProfileResolver $resolver,
         private readonly ModerationRunner $runner,
+        private readonly RunContextFactory $contextFactory,
     ) {}
 
     public function profile(string $profile): PendingProfile
     {
-        return new PendingProfile($profile, $this->resolver, $this->runner);
+        return new PendingProfile($profile, $this->resolver, $this->runner, $this->contextFactory);
     }
 }

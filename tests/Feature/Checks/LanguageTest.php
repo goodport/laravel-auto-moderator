@@ -93,18 +93,52 @@ final class LanguageTest extends TestCase
     }
 
     /**
-     * The check uses its configured language when the run does not override it.
+     * The explicit language overrides a different check setting.
      */
-    public function test_uses_configured_language(): void
+    public function test_run_language_overrides_check_language(): void
     {
-        $this->configure('en');
+        $this->app->setLocale('en');
+        $this->configure('ru');
+
+        $report = AutoModerator::profile('post')
+            ->input(['body' => 'Hello world'])
+            ->language('en')
+            ->run();
+
+        $this->assertTrue($report->passed());
+        $this->assertSame('en', $report->results()['language']->details['language']);
+    }
+
+    /**
+     * The check language setting wins over the application locale.
+     */
+    public function test_uses_check_language_before_app_locale(): void
+    {
+        $this->app->setLocale('en');
+        $this->configure('ru');
 
         $report = AutoModerator::profile('post')
             ->input(['body' => 'Привет мир'])
             ->run();
 
-        $this->assertTrue($report->rejected());
-        $this->assertSame('en', $report->results()['language']->details['language']);
+        $this->assertTrue($report->passed());
+        $this->assertSame('ru', $report->results()['language']->details['language']);
+    }
+
+    /**
+     * The application locale is the fallback when no language is configured.
+     */
+    public function test_uses_app_locale_without_check_language_or_override(): void
+    {
+        $this->app->setLocale('ru');
+        $this->configure(null);
+
+        $report = AutoModerator::profile('post')
+            ->input(['body' => 'Привет мир'])
+            ->run();
+
+        $this->assertTrue($report->passed());
+        $this->assertSame('ru', $report->results()['language']->details['language']);
     }
 
     /**
@@ -123,22 +157,27 @@ final class LanguageTest extends TestCase
     }
 
     private function configure(
-        string $language,
+        ?string $language = 'ru',
         int $minLength = 5,
         float $threshold = 0.6,
         bool $blocking = true,
     ): void {
+        $settings = [
+            'fields' => ['body'],
+            'min_length' => $minLength,
+            'threshold' => $threshold,
+            'blocking' => $blocking,
+        ];
+
+        if ($language !== null) {
+            $settings['language'] = $language;
+        }
+
         $this->setProfile('post', [
             'checks' => [
                 [
                     'check' => 'language',
-                    'settings' => [
-                        'fields' => ['body'],
-                        'language' => $language,
-                        'min_length' => $minLength,
-                        'threshold' => $threshold,
-                        'blocking' => $blocking,
-                    ],
+                    'settings' => $settings,
                 ],
             ],
         ]);

@@ -23,8 +23,13 @@ final class ModerationRunner
     /**
      * @param  array<string, mixed>  $fields
      */
-    public function run(ResolvedProfile $profile, array $fields, ?string $language, ?AuditContext $audit): Report
-    {
+    public function run(
+        ResolvedProfile $profile,
+        array $fields,
+        ?string $language,
+        string $defaultLanguage,
+        ?AuditContext $audit,
+    ): Report {
         $results = [];
 
         foreach ($profile->checks as $resolvedCheck) {
@@ -34,7 +39,7 @@ final class ModerationRunner
                 continue;
             }
 
-            $result = $this->runCheck($resolvedCheck, $fields, $language, $audit);
+            $result = $this->runCheck($resolvedCheck, $fields, $language, $defaultLanguage, $audit);
             $results[$resolvedCheck->key] = $result;
 
             if ($profile->stopOnReject && $result->state === ModerationState::Rejected) {
@@ -48,20 +53,25 @@ final class ModerationRunner
     /**
      * @param  array<string, mixed>  $fields
      */
-    private function runCheck(ResolvedCheck $resolvedCheck, array $fields, ?string $language, ?AuditContext $audit): CheckResult
-    {
+    private function runCheck(
+        ResolvedCheck $resolvedCheck,
+        array $fields,
+        ?string $language,
+        string $defaultLanguage,
+        ?AuditContext $audit,
+    ): CheckResult {
         $check = $resolvedCheck->instance;
 
         if ($check === null) {
             throw new LogicException('An enabled moderation check must have an instance.');
         }
 
-        $checkLanguage = $language ?? ($resolvedCheck->settings['language'] ?? null);
+        $checkLanguage = $language ?? ($resolvedCheck->settings['language'] ?? $defaultLanguage);
 
-        if ($checkLanguage !== null && (! is_string($checkLanguage) || trim($checkLanguage) === '')) {
+        if (! is_string($checkLanguage) || trim($checkLanguage) === '') {
             throw InvalidConfigurationException::invalidSetting(
                 $resolvedCheck->key.'.language',
-                'must be a non-empty string or null.',
+                'must be a non-empty string.',
             );
         }
 

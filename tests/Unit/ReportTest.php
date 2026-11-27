@@ -89,6 +89,66 @@ final class ReportTest extends TestCase
     }
 
     /**
+     * The first reason ignores passed and skipped checks.
+     */
+    public function test_first_reason_ignores_passed_and_skipped(): void
+    {
+        $report = new Report([
+            'passed' => CheckResult::passedResult('passed'),
+            'skipped' => CheckResult::skippedResult('skipped', 'Not enough text.'),
+            'undecided' => CheckResult::undecidedResult('undecided', 'Failure.'),
+            'rejected' => CheckResult::rejectedResult(
+                'rejected',
+                'Rejected.',
+                [new Finding('code', 'Message.', FindingSeverity::High, true)],
+            ),
+        ]);
+
+        $this->assertSame('Failure.', $report->firstReason());
+    }
+
+    /**
+     * The first reason returns a rejection reason.
+     */
+    public function test_first_reason_returns_rejection_reason(): void
+    {
+        $report = new Report([
+            'rejected' => CheckResult::rejectedResult(
+                'rejected',
+                'Rejected.',
+                [new Finding('code', 'Message.', FindingSeverity::High, true)],
+            ),
+        ]);
+
+        $this->assertSame('Rejected.', $report->firstReason());
+    }
+
+    /**
+     * The first reason is null when every check passed or was skipped.
+     */
+    public function test_first_reason_is_null_without_rejected_or_undecided(): void
+    {
+        $report = new Report([
+            'passed' => CheckResult::passedResult('passed'),
+            'skipped' => CheckResult::skippedResult('skipped', 'Not enough text.'),
+        ]);
+
+        $this->assertNull($report->firstReason());
+    }
+
+    /**
+     * An undecided error is returned when there is no reason.
+     */
+    public function test_first_reason_uses_undecided_error(): void
+    {
+        $report = new Report([
+            'undecided' => CheckResult::undecidedResult('undecided', 'Failure.'),
+        ]);
+
+        $this->assertSame('Failure.', $report->firstReason());
+    }
+
+    /**
      * The array representation includes every report section.
      */
     public function test_to_array(): void
@@ -105,6 +165,7 @@ final class ReportTest extends TestCase
         $this->assertFalse($array['undecided']);
         $this->assertFalse($array['all_skipped']);
         $this->assertArrayHasKey('passed', $array['results']);
+        $this->assertNull($array['first_reason']);
         $this->assertSame([], $array['messages']);
         $this->assertSame([], $array['violations']);
         $this->assertSame([], $array['warnings']);

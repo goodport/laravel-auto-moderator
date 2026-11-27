@@ -192,29 +192,6 @@ final class ConfigurationTest extends TestCase
     }
 
     /**
-     * A check that needs a language fails when neither the setting nor the run
-     * provides one.
-     */
-    public function test_missing_language_throws(): void
-    {
-        $this->setProfile('post', [
-            'checks' => [
-                [
-                    'check' => 'language',
-                    'settings' => [
-                        'fields' => ['body'],
-                        'min_length' => 1,
-                    ],
-                ],
-            ],
-        ]);
-
-        $this->expectException(InvalidConfigurationException::class);
-
-        AutoModerator::profile('post')->input(['body' => 'Hello'])->run();
-    }
-
-    /**
      * An unsupported language without a configured alphabet is an error.
      */
     public function test_unknown_language_alphabet_throws(): void
@@ -234,6 +211,9 @@ final class ConfigurationTest extends TestCase
 
         $this->expectException(InvalidConfigurationException::class);
 
-        AutoModerator::profile('post')->input(['body' => 'Hello'])->run();
+        AutoModerator::profile('post')
+            ->input(['body' => 'Hello'])
+            ->language('xx')
+            ->run();
     }
 }
