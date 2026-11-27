@@ -1,6 +1,6 @@
 {
     "name": "goodport/laravel-auto-moderator",
-    "description": "Synchronous content moderation profiles with built-in and custom checks.",
+    "description": "Content moderation profiles with built-in checks, synchronous cases, and background runs.",
     "type": "library",
     "homepage": "https://github.com/goodport/laravel-auto-moderator",
     "license": "MIT",

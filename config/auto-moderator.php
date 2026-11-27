@@ -67,6 +67,26 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Background moderation
+    |--------------------------------------------------------------------------
+    |
+    | Sources are class names implementing ModerationSource. The dispatch
+    | command asks every source for pending models and queues a moderation job
+    | for each one. A null queue uses the default application queue. The unique
+    | lock expires after unique_for_seconds; cleanup marks runs older than
+    | stale_after_minutes as failed.
+    |
+    */
+
+    'background' => [
+        'sources' => [],
+        'queue' => null,
+        'unique_for_seconds' => 3600,
+        'stale_after_minutes' => 60,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Check registry
     |--------------------------------------------------------------------------
     |

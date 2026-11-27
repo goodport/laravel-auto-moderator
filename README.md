@@ -1,13 +1,14 @@
 # Laravel Auto Moderator
 
-Synchronous content moderation profiles for Laravel applications.
+Synchronous and background content moderation for Laravel applications.
 
 The package runs an ordered list of checks over named input fields, collects one
 report, and returns a final state: `passed`, `rejected`, `undecided`, or
-`skipped`. It stores nothing and knows nothing about your models. The run
-context uses the authenticated user and the current request URL by default, and
-falls back to the application locale for the language; each value can be
-overridden per run.
+`skipped`. The optional background layer queues moderation, stores automatic
+results, and publishes a completion event. The package does not know application
+models, statuses, notifications, or domain effects. The run context uses the
+authenticated user and the current request URL by default, and falls back to the
+application locale for the language; each value can be overridden per run.
 
 ## Requirements
 
@@ -15,11 +16,13 @@ overridden per run.
 - Laravel 12.62+ or 13.x;
 - a configured AI provider in `config/ai.php` when the AI check is used;
 - a database connection for the AI moderator audit table when the AI check is
-  used (see below).
+  used (see below);
+- a queue worker when background moderation is used.
 
 The package depends on `goodport/laravel-ai-moderator` for AI checks and
 policies and on `consoletvs/profanity` for profanity dictionaries. It has no
-migrations, models, statuses, queues, translations, or admin screens of its own.
+application models, statuses, translations, or admin screens. The background
+layer owns two fixed tables and models.
 
 ## Installation
 
@@ -33,8 +36,9 @@ Publish the configuration:
 php artisan vendor:publish --tag=auto-moderator-config
 ```
 
-The AI dependency writes its own audit and journal tables. Run the migrations
-once:
+The AI dependency writes its own audit and journal tables. The package loads its
+own migrations automatically, including the background moderation tables. Run
+them once:
 
 ```bash
 php artisan migrate
@@ -174,7 +178,8 @@ context. When it is disabled, no automatic context is built, but an explicit
 `->audit()` still works. An explicit `->audit()` replaces the automatic context
 entirely.
 
-The package does not persist the context. The AI check forwards it to the AI
+Synchronous runs do not persist the context. Background runs store it in
+`auto_moderator_runs.context`. The AI check also forwards audit data to the AI
 moderator audit table.
 
 ## Result semantics
@@ -262,8 +267,8 @@ Rules:
   case where every field is skipped are `skipped`, never approved;
 - configuration, input, and check-contract errors throw; an unexpected check
   exception becomes `undecided` for that field and other fields still run;
-- the package does not change application state, send notifications, log, sleep,
-  or persist anything.
+- the synchronous case does not change application state, send notifications,
+  log, sleep, or persist anything.
 
 `ModerationCaseResult` exposes `state()`, `passed()`, `rejected()`,
 `undecided()`, `allSkipped()`, `results()`, `result($key)`, `firstReason()`,
@@ -278,6 +283,133 @@ and `toArray()`. `report` is `null` for a field that did not run. The
 `toArray()` shape is `state`, `passed`, `rejected`, `undecided`, `all_skipped`,
 `first_reason`, and `fields`; each field contains `key`, `label`, `skipped`,
 `state`, and `report` (or `null`).
+
+## Background moderation
+
+The background layer queues moderation, stores automatic results, and publishes
+an event. The application implements two contracts and registers sources; the
+package owns the job, tables, statuses, and the completion event.
+
+```php
+use Goodport\AutoModerator\Contracts\Moderatable;
+use Goodport\AutoModerator\Contracts\ModerationSource;
+use Goodport\AutoModerator\Moderation\ModerationField;
+
+final class Post extends Model implements Moderatable
+{
+    public function moderationScenario(): string
+    {
+        return 'post';
+    }
+
+    public function moderationFields(): array
+    {
+        return [
+            new ModerationField('body', 'Post body', 'post', ['body' => $this->body]),
+            new ModerationField('title', 'Post title', 'title', ['text' => $this->title]),
+        ];
+    }
+
+    public function moderationActor(): Model|Authenticatable|null
+    {
+        return $this->author;
+    }
+
+    public function moderationLanguage(): ?string
+    {
+        return 'en';
+    }
+}
+
+final class PostSource implements ModerationSource
+{
+    public function pending(): iterable
+    {
+        return Post::query()->where('status', 'pending')->get();
+    }
+}
+```
+
+Register sources and an optional queue:
+
+```php
+'background' => [
+    'sources' => [PostSource::class],
+    'queue' => 'moderation',
+    'unique_for_seconds' => 3600,
+    'stale_after_minutes' => 60,
+],
+```
+
+Run the dispatcher, for example from the scheduler:
+
+```bash
+php artisan auto-moderator:dispatch
+```
+
+Mark runs that stayed `running` for too long as failed:
+
+```bash
+php artisan auto-moderator:cleanup
+```
+
+How a run works:
+
+- every pending item must be an Eloquent model implementing `Moderatable`;
+  otherwise the command fails with a configuration error before queueing;
+- the command queues `RunModerationJob` with the morph type, ID, and scenario;
+  the dispatched job is unique for `morph + id + scenario` with a finite
+  `background.unique_for_seconds` lock;
+- the job creates a `ModerationRun` in `running`, resolves the model, builds
+  `moderationCase()` from `moderationFields()`, and saves every check result;
+- each field keeps its own profile, so one scenario may run different profiles
+  for different fields;
+- the scenario passed to the job must match `moderationScenario()`; a mismatch
+  marks the run `failed`;
+- `context` stores the language and the audit context. The moderatable model is
+  the audit subject, and `request_url` is `null` because the job runs in a
+  queue;
+- empty fields produce no result rows; a case without non-empty fields is
+  `skipped`;
+- configuration and job errors mark the run `failed`, set `finished_at` and
+  `reason`, and rethrow. They are never converted to `approved` or `skipped`;
+- `ModerationCompleted` is published with the run and its loaded results after
+  the run is committed. It is not published for `failed` runs;
+- the package writes only `auto_moderator_runs` and `auto_moderator_results`.
+  It does not change application state or record manual moderator decisions.
+
+Run statuses:
+
+| Status | Meaning |
+| --- | --- |
+| `running` | The attempt is in progress. |
+| `approved` | Every check passed. |
+| `rejected` | At least one blocking rejection. |
+| `needs_review` | No rejection, but at least one `undecided` check. |
+| `skipped` | There was nothing to check. |
+| `failed` | The run could not complete. |
+
+Listen to the completion event:
+
+```php
+use Goodport\AutoModerator\Events\ModerationCompleted;
+
+Event::listen(function (ModerationCompleted $event): void {
+    $run = $event->run; // status, reason, results
+});
+```
+
+Stored data:
+
+- `ModerationRun` — `moderatable_type`, `moderatable_id`, `scenario`, `status`,
+  `reason`, `context`, `started_at`, `finished_at`, and the `results` relation;
+- `ModerationResult` — `field_key`, `check_key`, `state`, `reason`, `error`,
+  `findings`, `details`, and the `moderationRun` relation. One row is one check
+  result; `error` is a technical check failure, separate from the moderation
+  `reason`.
+
+The background schema belongs to the package: migrations are loaded
+automatically and are not published.
 
 ## Profiles
 
@@ -680,13 +812,16 @@ inconsistent result throws `InvalidCheckResultException`.
 
 ## Limitations
 
-- The package is synchronous. Queueing, retries, model loading, status changes,
-  and notifications belong to the application.
-- The package has no models, migrations, translations, or admin interface.
+- Synchronous runs are available directly; background moderation is optional
+  and requires a queue worker.
+- The background layer stores only automatic results in its two tables. Manual
+  moderator decisions and all domain effects belong to the application.
+- The package has no application models, statuses, translations, or admin
+  interface. The background schema is fixed and not published.
 - The AI dependency writes its own audit and journal tables. Run its migrations.
-- The run context factory reads `Auth`, the current request, and the application
-  locale by default. Checks never read them directly. Pass explicit overrides
-  when the defaults are not suitable, for example in background jobs.
+- The synchronous run context factory reads `Auth`, the current request, and the
+  application locale by default. Checks never read them directly. Background
+  runs build an explicit audit context from the actor and the moderated model.
 
 ## Development
 

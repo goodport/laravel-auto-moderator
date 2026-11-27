@@ -68,4 +68,36 @@ final class InvalidConfigurationException extends RuntimeException
             $supported === [] ? '(none)' : implode(', ', $supported),
         ));
     }
+
+    public static function unknownModeratableType(string $type): self
+    {
+        return new self(sprintf('The moderation morph type "%s" does not resolve to an Eloquent model.', $type));
+    }
+
+    public static function notModeratable(string $class): self
+    {
+        return new self(sprintf('The model "%s" must implement the Moderatable contract.', $class));
+    }
+
+    public static function scenarioMismatch(string $expected, string $actual): self
+    {
+        return new self(sprintf(
+            'The moderation scenario "%s" does not match the model scenario "%s".',
+            $expected,
+            $actual,
+        ));
+    }
+
+    public static function invalidSource(string $class): self
+    {
+        return new self(sprintf('The moderation source "%s" must implement the ModerationSource contract.', $class));
+    }
+
+    public static function invalidSourceModel(string $source): self
+    {
+        return new self(sprintf(
+            'The moderation source "%s" returned a model that is not Moderatable.',
+            $source,
+        ));
+    }
 }

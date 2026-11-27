@@ -52,30 +52,10 @@ final class RunContextFactory
 
         $actor ??= Auth::user();
 
-        return new AuditContext(
-            actorType: $this->actorType($actor),
-            actorId: $this->actorId($actor),
-            subjectType: $subject?->getMorphClass(),
-            subjectId: $subject !== null ? (string) $subject->getKey() : null,
+        return AuditContext::fromActorAndSubject(
+            actor: $actor,
+            subject: $subject,
             requestUrl: request()->fullUrl(),
         );
-    }
-
-    private function actorType(Model|Authenticatable|null $actor): ?string
-    {
-        return match (true) {
-            $actor === null => null,
-            $actor instanceof Model => $actor->getMorphClass(),
-            default => $actor::class,
-        };
-    }
-
-    private function actorId(Model|Authenticatable|null $actor): ?string
-    {
-        return match (true) {
-            $actor === null => null,
-            $actor instanceof Model => (string) $actor->getKey(),
-            default => (string) $actor->getAuthIdentifier(),
-        };
     }
 }

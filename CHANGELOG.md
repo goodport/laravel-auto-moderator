@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-28
+
+### Added
+
+- Background moderation layer: `Moderatable` and `ModerationSource` contracts,
+  `RunModerationJob`, the `auto-moderator:dispatch` command, fixed
+  `auto_moderator_runs` and `auto_moderator_results` tables, and the
+  `ModerationRun` and `ModerationResult` models.
+- Run statuses `running`, `approved`, `rejected`, `needs_review`, `skipped`,
+  and `failed`. `needs_review` replaces a separate AI attention status at the
+  application level; the package has no manual-review flag.
+- `ModerationCompleted` event published after a completed run with loaded
+  results. Failed runs are stored but do not publish the event.
+- `background.sources` and `background.queue` configuration, plus finite
+  `background.unique_for_seconds` and `background.stale_after_minutes`.
+  Package migrations are loaded automatically and are not published.
+- `auto-moderator:cleanup` marks stale `running` runs as failed.
+- `AuditContext::fromActorAndSubject()` and `AuditContext::toArray()` shared by
+  synchronous and background runs.
+- Tests for run creation, result mapping, statuses, empty fields, missing and
+  non-moderatable models, morph maps, unique dispatch, source traversal, the
+  completion event, and the absence of domain writes.
+
 ## [1.3.0] - 2026-11-27
 
 ### Added

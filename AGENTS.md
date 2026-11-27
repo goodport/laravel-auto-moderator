@@ -4,7 +4,10 @@ Technical description of `goodport/laravel-auto-moderator`.
 
 ## Purpose
 
-The package is a synchronous content moderation orchestrator:
+The package is a content moderation orchestrator with a synchronous API and an
+optional background layer.
+
+Synchronous:
 
 1. read an explicit or fallback profile and its ordered check list;
 2. resolve registered checks and merge registry defaults with profile settings;
@@ -14,26 +17,39 @@ The package is a synchronous content moderation orchestrator:
 6. aggregate results into one `Report`;
 7. return `passed`, `rejected`, `undecided`, or `skipped`.
 
-The package owns no models, migrations, statuses, queues, translations, admin
-screens, or persistence. The AI check delegates the AI pipeline to
-`goodport/laravel-ai-moderator`; the profanity check delegates dictionaries to
-`consoletvs/profanity`.
+Background:
+
+1. the dispatch command asks registered `ModerationSource` instances for pending models;
+2. each model is queued as a unique `RunModerationJob` keyed by morph type, ID, and scenario;
+3. the job creates a `ModerationRun`, builds a moderation case from
+   `Moderatable::moderationFields()`, saves `ModerationResult` rows, sets the
+   final run status, and publishes `ModerationCompleted`.
+
+The package owns the background job, command, event, tables, and models. It does
+not own application models, statuses, notifications, or domain effects, and it
+stores only automatic moderation results. The AI check delegates the AI pipeline
+to `goodport/laravel-ai-moderator`; the profanity check delegates dictionaries
+to `consoletvs/profanity`.
 
 ## Directory map
 
 ```text
 config/auto-moderator.php              publishable configuration
+database/migrations/                   fixed background moderation schema
 src/
   AutoModeratorManager.php             facade entry point
-  AutoModeratorServiceProvider.php     config merge, bindings, config publishing
+  AutoModeratorServiceProvider.php     config, bindings, migrations, command, publishing
   PendingProfile.php                   fluent input/language/actor/subject/audit/run
   PendingModerationCase.php            fluent field/language/actor/subject/audit/run
   Facades/AutoModerator.php            facade accessor
   Contracts/
     ModerationCheck.php                check contract
     ValidatesSettings.php              optional early settings validation contract
+    Moderatable.php                    model that can be moderated in the background
+    ModerationSource.php               source of pending models
   Moderation/
     ModerationState.php                passed | rejected | undecided | skipped
+    ModerationRunStatus.php            running | approved | rejected | needs_review | skipped | failed
     FindingSeverity.php                low | medium | high
     AuditContext.php                   neutral audit DTO
     ModerationContext.php              check input: key, fields, language, settings, audit
@@ -43,6 +59,15 @@ src/
     ModerationField.php                one case field description
     ModerationFieldResult.php          result of one case field
     ModerationCaseResult.php           aggregated case result
+  Models/
+    ModerationRun.php                  background run
+    ModerationResult.php               one stored check result
+  Jobs/
+    RunModerationJob.php               unique background moderation attempt
+  Events/
+    ModerationCompleted.php            completed run event
+  Console/
+    DispatchModerationCommand.php      queues jobs for registered sources
   Exceptions/
     InvalidConfigurationException.php  configuration errors
     InvalidInputException.php          missing or invalid input
@@ -130,6 +155,53 @@ and `toArray()`. `ModerationFieldResult` exposes `key`, `label`, `skipped`,
 `toArray()`. Static factories are `passedResult()`, `rejectedResult()`,
 `undecidedResult()`, and `skippedResult()`.
 
+## Background moderation
+
+- `Contracts\Moderatable` — application model contract: `moderationScenario()`,
+  `moderationFields()` (an array of `ModerationField`), `moderationActor()`, and
+  `moderationLanguage()`.
+- `Contracts\ModerationSource` — `pending(): iterable` returns models to queue.
+- `Jobs\RunModerationJob` — accepts only the morph type, ID, and scenario. It is
+  unique for `morph + id + scenario` with a finite
+  `background.unique_for_seconds` lock.
+- `Console\DispatchModerationCommand` — `auto-moderator:dispatch` iterates
+  `auto-moderator.background.sources` and queues one job per pending model.
+- `Console\CleanupStaleModerationRunsCommand` — `auto-moderator:cleanup` marks
+  `running` runs older than `background.stale_after_minutes` as `failed`.
+- `Models\ModerationRun` — `moderatable()` and `results()` relations; `status`
+  casts to `ModerationRunStatus`.
+- `Models\ModerationResult` — `moderationRun()` relation; `state` casts to
+  `ModerationState`, `findings` and `details` cast to arrays.
+- `Events\ModerationCompleted` — carries the saved `ModerationRun` with loaded
+  results. It is published after the run is stored and is not published for
+  `failed` runs.
+
+A record in `auto_moderator_runs` is one attempt, not a job state. The job
+creates it in `running` with `started_at`, and a retry creates a new attempt
+while the failed attempt stays in history. The scenario passed to the job must
+match `Moderatable::moderationScenario()`.
+
+The run context is built explicitly by the job: `context.language` is
+`moderationLanguage()` as returned (including `null`), and `context.audit` is
+built from `moderationActor()` and the moderated model with `request_url` set to
+`null`. `AuditContext::fromActorAndSubject()` is shared by synchronous and
+background runs.
+
+Results are written per check: one `ModerationResult` row per `CheckResult` of
+a non-skipped field with `field_key`, `check_key`, `state`, `reason`, `error`,
+`findings`, and `details`. `reason` is the moderation reason; `error` is a
+technical check failure. Skipped checks of non-empty fields are stored; empty
+fields produce no rows.
+
+Run status mapping: any rejection → `rejected`; otherwise any undecided →
+`needs_review`; otherwise any passed → `approved`; otherwise `skipped`. There is
+no separate manual-review flag in this layer.
+
+A configuration or job error marks the run `failed`, sets `finished_at` and
+`reason`, and rethrows. Missing models return silently. Not-`Moderatable` models
+and scenario mismatches fail the run. Sources that return a non-`Moderatable`
+model fail before a job is queued.
+
 ## Configuration resolution
 
 - `ProfileConfigReader` validates the profile structure, global switch, global
@@ -210,6 +282,9 @@ Unknown profile, entry, registry, and settings keys are configuration errors.
 
 - `Contracts\ModerationCheck` — application checks.
 - `Contracts\ValidatesSettings` — optional early validation for custom settings.
+- `Contracts\Moderatable` — application model that can be moderated in the
+  background.
+- `Contracts\ModerationSource` — application source of pending models.
 - `config/auto-moderator.php`:
   - `enabled` — global switch;
   - `defaults` — shared profile defaults;
@@ -217,6 +292,11 @@ Unknown profile, entry, registry, and settings keys are configuration errors.
   - `fallback.ai_check` — registered AI check used by fallback profiles;
   - `checks` — registry key → class + default settings;
   - `services` — named external service settings;
+  - `background.sources` — source class names resolved through the container;
+  - `background.queue` — queue name, or `null` for the default queue;
+  - `background.unique_for_seconds` — finite unique lock lifetime;
+  - `background.stale_after_minutes` — age after which a `running` run is marked
+    failed;
   - `profiles` — ordered check lists.
 - `Checks\Ai\AiModerationCheck` — a direct AI check or policy adapter. The check
   or policy itself is defined in `config/ai-moderator.php`.
@@ -258,27 +338,37 @@ Tests use PHPUnit and Orchestra Testbench. Feature tests cover profile order,
 stop-on-reject, warnings, all-skipped, every built-in check, a custom check,
 direct and policy AI checks, fallback profiles, AI fake agents, Perspective
 HTTP fakes, automatic run context, configuration/input errors, moderation case
-order, empty fields, shared context, collected reasons, and duplicate field
-keys. Unit tests cover report aggregation, case aggregation, field emptiness,
-result invariants, single AI result mapping, fallback profile resolution, and
-config merging.
+order, empty fields, shared context, collected reasons, duplicate field keys,
+background run creation, result mapping, run statuses, failed and missing
+models, morph maps, unique dispatch, source traversal, and the completion event.
+Unit tests cover report aggregation, case aggregation, field emptiness, result
+invariants, single AI result mapping, fallback profile resolution, and config
+merging.
 
 The base test case registers the AI, journal, resilience, AI moderator, and
 auto moderator providers and uses an in-memory SQLite database for the AI
-dependency tables.
+dependency tables. Background tests load an extra fixture migration for their
+test model.
 
 ## Maintenance rules
 
-- Do not add models, migrations, statuses, queues, translations, admin screens,
-  or browser tests.
+- Do not add application models, statuses, notifications, translations, admin
+  screens, or browser tests.
+- The background layer owns only `auto_moderator_runs`, `auto_moderator_results`,
+  their models, the job, the command, and the event. Do not add domain effects,
+  manual moderator decisions, or application-specific branches.
+- Reuse `moderationCase()` in the background job. Do not duplicate the check
+  engine.
 - Do not copy AI moderator internals. Use its public check, policy, report, and
   audit API only.
 - Keep `config/ai-moderator.php` the only source of AI check fields and prompts.
   A single AI check uses the fallback profile; do not add duplicate one-check
   auto profiles.
 - Do not add a built-in stop word list.
-- Do not read `config()` inside checks. The run context factory is the only
-  place that reads `Auth`, the current request, or `App::getLocale()`.
+- Do not read `config()` inside checks. For synchronous runs,
+  `RunContextFactory` is the only place that reads `Auth`, the current request,
+  or `App::getLocale()`. Background runs build an explicit audit context in the
+  job.
 - Do not treat `undecided` as approval.
 - Keep public documentation and code comments in English.
 - Update this file and `README.md` when the public API or configuration changes.

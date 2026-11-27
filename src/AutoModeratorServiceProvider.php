@@ -2,6 +2,8 @@
 
 namespace Goodport\AutoModerator;
 
+use Goodport\AutoModerator\Console\CleanupStaleModerationRunsCommand;
+use Goodport\AutoModerator\Console\DispatchModerationCommand;
 use Goodport\AutoModerator\Orchestration\ModerationCaseRunner;
 use Goodport\AutoModerator\Orchestration\ModerationRunner;
 use Goodport\AutoModerator\Profiles\ProfileResolver;
@@ -21,7 +23,14 @@ final class AutoModeratorServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
+
         if ($this->app->runningInConsole()) {
+            $this->commands([
+                CleanupStaleModerationRunsCommand::class,
+                DispatchModerationCommand::class,
+            ]);
+
             $this->publishes([
                 __DIR__.'/../config/auto-moderator.php' => config_path('auto-moderator.php'),
             ], 'auto-moderator-config');
