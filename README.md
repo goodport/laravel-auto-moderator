@@ -243,6 +243,31 @@ A profile is an ordered list. The list order is the execution order.
 - The global `auto-moderator.enabled` switch skips every profile without
   resolving check classes or settings or calling external services.
 
+### Fallback profiles
+
+Profiles are needed only for composite scenarios, deterministic checks, and
+per-profile overrides. A single AI check runs by its AI check key: if
+`auto-moderator.profiles.<key>` is absent but `config/ai-moderator.php` defines
+a check with the same key, the package builds a one-check profile automatically.
+
+The fallback profile:
+
+- uses the registered AI check from `auto-moderator.fallback.ai_check`
+  (default `ai`);
+- sets `check = <profile key>` and no `fields`;
+- is enabled and uses `auto-moderator.defaults.stop_on_reject`;
+- returns its result under the registered AI check key (`ai` by default), not
+  the profile key.
+
+Explicit profiles always win. An invalid explicit profile is an error, not a
+fallback. If neither a profile nor an AI check exists, the profile is unknown.
+If the AI check exists but the fallback check is not registered, configuration
+fails.
+
+```php
+AutoModerator::profile('text_name')->input(['text' => $text])->run();
+```
+
 ## Check registry
 
 The `checks` section maps a key to a class and optional default settings:
@@ -377,9 +402,16 @@ Scores are returned in `details.scores`.
 
 ### AI moderation
 
-A direct AI check is the preferred mode for one AI check. Describe the check
-once in `config/ai-moderator.php` and reference it from the auto moderator
-registry:
+A direct AI check is the preferred mode for one AI check. For a single check,
+the auto profile is optional: the fallback profile uses the AI check key
+directly.
+
+```php
+AutoModerator::profile('text_name')->input(['text' => $text])->run();
+```
+
+Describe the check once in `config/ai-moderator.php` and reference it from the
+auto moderator registry when you need overrides or several checks:
 
 ```php
 'checks' => [

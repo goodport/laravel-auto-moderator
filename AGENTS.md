@@ -6,7 +6,7 @@ Technical description of `goodport/laravel-auto-moderator`.
 
 The package is a synchronous content moderation orchestrator:
 
-1. read a profile and its ordered check list;
+1. read an explicit or fallback profile and its ordered check list;
 2. resolve registered checks and merge registry defaults with profile settings;
 3. resolve the run language and build the audit context from the Laravel environment;
 4. build one `ModerationContext` per check;
@@ -56,7 +56,7 @@ src/
     Ai/                                direct check / policy adapter and mapper
   Profiles/
     ProfileConfig.php                  validated profile DTO
-    ProfileConfigReader.php            profile structure and defaults validation
+    ProfileConfigReader.php            explicit and fallback profile validation
     CheckFactory.php                   registry entry, settings merge, service, container
     ProfileResolver.php                thin orchestration
     ResolvedProfile.php                executable profile
@@ -82,6 +82,9 @@ $report = AutoModerator::profile('post')
     ->run();
 ```
 
+A single AI check can run by its AI check key. The fallback profile returns its
+result under the registered AI check key (`ai` by default), not the profile key.
+
 - `AutoModerator::profile(string $profile): PendingProfile`
 - `PendingProfile::input(array $fields): self`
 - `PendingProfile::language(string $language): self`
@@ -104,6 +107,16 @@ $report = AutoModerator::profile('post')
 - `ProfileConfigReader` validates the profile structure, global switch, global
   defaults, and profile entries. It normalizes every entry to
   `check` + `enabled` + `settings`.
+- A profile is explicit when `auto-moderator.profiles.<key>` exists. An invalid
+  explicit profile is an error, never a fallback. When the profile is absent,
+  the reader looks for `ai-moderator.checks.<key>` and builds a fallback profile
+  from one AI check.
+- The fallback check key is `auto-moderator.fallback.ai_check` (default `ai`).
+  The fallback profile sets `check = <profile key>`, no `fields`, `enabled`
+  true, and the default `stop_on_reject`; its result is keyed by the fallback
+  check key. If the AI check exists but the fallback check is not registered,
+  configuration fails. If neither the profile nor the AI check exists, the
+  profile is unknown.
 - `CheckFactory::definition()` reads and validates the registry entry for every
   listed check, including disabled checks.
 - `CheckFactory::make()` merges registry settings with profile overrides,
@@ -151,8 +164,9 @@ Unknown profile, entry, registry, and settings keys are configuration errors.
 - `config/auto-moderator.php`:
   - `enabled` — global switch;
   - `defaults` — shared profile defaults;
-  - `checks` — registry key → class + default settings;
   - `audit` — automatic audit switch;
+  - `fallback.ai_check` — registered AI check used by fallback profiles;
+  - `checks` — registry key → class + default settings;
   - `services` — named external service settings;
   - `profiles` — ordered check lists.
 - `Checks\Ai\AiModerationCheck` — a direct AI check or policy adapter. The check
@@ -180,6 +194,8 @@ Unknown profile, entry, registry, and settings keys are configuration errors.
   must not set `fields`; the AI check declares its own fields. Policy mode
   requires `fields`. No `blocking` setting. The AI result or report drives the
   state and findings. Direct mode writes the AI check key as the audit policy.
+  A single AI check runs without an explicit auto profile through the fallback
+  profile; its result key is the fallback check key (`ai` by default).
 
 ## Tests
 
@@ -191,9 +207,10 @@ composer validate --strict
 
 Tests use PHPUnit and Orchestra Testbench. Feature tests cover profile order,
 stop-on-reject, warnings, all-skipped, every built-in check, a custom check,
-direct and policy AI checks, AI fake agents, Perspective HTTP fakes, automatic
-run context, and configuration/input errors. Unit tests cover report
-aggregation, result invariants, single AI result mapping, and config merging.
+direct and policy AI checks, fallback profiles, AI fake agents, Perspective
+HTTP fakes, automatic run context, and configuration/input errors. Unit tests
+cover report aggregation, result invariants, single AI result mapping, fallback
+profile resolution, and config merging.
 
 The base test case registers the AI, journal, resilience, AI moderator, and
 auto moderator providers and uses an in-memory SQLite database for the AI
@@ -205,6 +222,9 @@ dependency tables.
   or browser tests.
 - Do not copy AI moderator internals. Use its public check, policy, report, and
   audit API only.
+- Keep `config/ai-moderator.php` the only source of AI check fields and prompts.
+  A single AI check uses the fallback profile; do not add duplicate one-check
+  auto profiles.
 - Do not add a built-in stop word list.
 - Do not read `config()` inside checks. The run context factory is the only
   place that reads `Auth`, the current request, or `App::getLocale()`.

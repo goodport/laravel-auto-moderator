@@ -6,7 +6,7 @@ use Goodport\AutoModerator\Exceptions\InvalidConfigurationException;
 use Illuminate\Contracts\Config\Repository;
 
 /**
- * Reads and validates the profile structure.
+ * Reads and validates explicit and fallback profile configuration.
  *
  * Check registration, settings merging, and class resolution belong to the
  * check factory. This reader only guarantees that the profile itself is
@@ -22,33 +22,32 @@ final class ProfileConfigReader
             throw InvalidConfigurationException::unknownProfile($profile);
         }
 
-        $profileConfig = $this->config->get("auto-moderator.profiles.{$profile}");
+        $globalEnabled = $this->readGlobalEnabled();
+        $defaults = $this->readDefaults();
 
-        if (! is_array($profileConfig)) {
-            throw InvalidConfigurationException::unknownProfile($profile);
+        if ($this->config->has("auto-moderator.profiles.{$profile}")) {
+            return $this->readExplicitProfile($profile, $globalEnabled, $defaults);
         }
 
-        $unknown = array_diff(array_keys($profileConfig), ['enabled', 'stop_on_reject', 'checks']);
+        return $this->readFallbackProfile($profile, $globalEnabled, $defaults);
+    }
 
-        if ($unknown !== []) {
-            throw InvalidConfigurationException::invalidProfile(
-                $profile,
-                'contains unknown keys: '.implode(', ', $unknown).'.',
-            );
-        }
-
+    private function readGlobalEnabled(): bool
+    {
         $globalEnabled = $this->config->get('auto-moderator.enabled');
 
         if (! is_bool($globalEnabled)) {
             throw InvalidConfigurationException::invalidSetting('enabled', 'must be a boolean.');
         }
 
-        $profileEnabled = $profileConfig['enabled'] ?? true;
+        return $globalEnabled;
+    }
 
-        if (! is_bool($profileEnabled)) {
-            throw InvalidConfigurationException::invalidProfile($profile, '`enabled` must be a boolean.');
-        }
-
+    /**
+     * @return array{stop_on_reject: bool}
+     */
+    private function readDefaults(): array
+    {
         $defaults = $this->config->get('auto-moderator.defaults', []);
 
         if (! is_array($defaults)) {
@@ -64,10 +63,45 @@ final class ProfileConfigReader
             );
         }
 
-        $stopOnReject = $profileConfig['stop_on_reject'] ?? ($defaults['stop_on_reject'] ?? false);
+        $stopOnReject = $defaults['stop_on_reject'] ?? false;
 
         if (! is_bool($stopOnReject)) {
             throw InvalidConfigurationException::invalidSetting('defaults.stop_on_reject', 'must be a boolean.');
+        }
+
+        return ['stop_on_reject' => $stopOnReject];
+    }
+
+    /**
+     * @param  array{stop_on_reject: bool}  $defaults
+     */
+    private function readExplicitProfile(string $profile, bool $globalEnabled, array $defaults): ProfileConfig
+    {
+        $profileConfig = $this->config->get("auto-moderator.profiles.{$profile}");
+
+        if (! is_array($profileConfig)) {
+            throw InvalidConfigurationException::invalidProfile($profile, 'must be an object.');
+        }
+
+        $unknown = array_diff(array_keys($profileConfig), ['enabled', 'stop_on_reject', 'checks']);
+
+        if ($unknown !== []) {
+            throw InvalidConfigurationException::invalidProfile(
+                $profile,
+                'contains unknown keys: '.implode(', ', $unknown).'.',
+            );
+        }
+
+        $profileEnabled = $profileConfig['enabled'] ?? true;
+
+        if (! is_bool($profileEnabled)) {
+            throw InvalidConfigurationException::invalidProfile($profile, '`enabled` must be a boolean.');
+        }
+
+        $stopOnReject = $profileConfig['stop_on_reject'] ?? $defaults['stop_on_reject'];
+
+        if (! is_bool($stopOnReject)) {
+            throw InvalidConfigurationException::invalidProfile($profile, '`stop_on_reject` must be a boolean.');
         }
 
         $entries = $profileConfig['checks'] ?? null;
@@ -147,5 +181,48 @@ final class ProfileConfigReader
             stopOnReject: $stopOnReject,
             checks: $checks,
         );
+    }
+
+    /**
+     * @param  array{stop_on_reject: bool}  $defaults
+     */
+    private function readFallbackProfile(string $profile, bool $globalEnabled, array $defaults): ProfileConfig
+    {
+        if (! $this->config->has("ai-moderator.checks.{$profile}")) {
+            throw InvalidConfigurationException::unknownProfile($profile);
+        }
+
+        $fallbackCheck = $this->readFallbackCheck();
+
+        if (! $this->config->has("auto-moderator.checks.{$fallbackCheck}")) {
+            throw InvalidConfigurationException::fallbackCheckMissing($fallbackCheck);
+        }
+
+        return new ProfileConfig(
+            key: $profile,
+            enabled: $globalEnabled,
+            stopOnReject: $defaults['stop_on_reject'],
+            checks: [
+                [
+                    'check' => $fallbackCheck,
+                    'enabled' => true,
+                    'settings' => ['check' => $profile],
+                ],
+            ],
+        );
+    }
+
+    private function readFallbackCheck(): string
+    {
+        $fallbackCheck = $this->config->get('auto-moderator.fallback.ai_check');
+
+        if (! is_string($fallbackCheck) || trim($fallbackCheck) === '') {
+            throw InvalidConfigurationException::invalidSetting(
+                'fallback.ai_check',
+                'must be a non-empty registered check key.',
+            );
+        }
+
+        return trim($fallbackCheck);
     }
 }

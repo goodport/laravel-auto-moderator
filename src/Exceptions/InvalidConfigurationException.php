@@ -30,6 +30,14 @@ final class InvalidConfigurationException extends RuntimeException
         return new self(sprintf('Auto-moderator check "%s" is not registered.', $check));
     }
 
+    public static function fallbackCheckMissing(string $check): self
+    {
+        return new self(sprintf(
+            'The fallback AI check "%s" is not registered in auto-moderator.checks.',
+            $check,
+        ));
+    }
+
     public static function invalidCheck(string $check, string $message, ?Throwable $previous = null): self
     {
         return new self(sprintf('Auto-moderator check "%s" is invalid: %s', $check, $message), 0, $previous);

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-27
+
+### Added
+
+- Fallback profiles: when a profile is absent but `config/ai-moderator.php`
+  defines a check with the same key, the package builds a one-check AI profile.
+  The fallback check key is `auto-moderator.fallback.ai_check` (default `ai`).
+  The fallback profile uses `check = <profile key>`, no `fields`, the default
+  `stop_on_reject`, and returns its result under the fallback check key.
+- Tests for fallback profiles, explicit-profile priority, unknown profiles,
+  missing fallback checks, disabled AI checks, and composite profiles.
+
+### Changed
+
+- Profiles are needed only for composite scenarios, deterministic checks, and
+  overrides. A single AI check runs by its AI check key. Explicit profiles
+  always win; an invalid explicit profile is an error, not a fallback.
+
 ## [1.1.0] - 2026-11-27
 
 ### Added

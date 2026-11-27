@@ -51,6 +51,22 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Fallback profile
+    |--------------------------------------------------------------------------
+    |
+    | A profile is required only for composite scenarios and overrides. When a
+    | profile is absent but an AI check with the same key exists, the package
+    | builds a one-check profile automatically. This key selects the registered
+    | AI check used by that fallback profile.
+    |
+    */
+
+    'fallback' => [
+        'ai_check' => 'ai',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Check registry
     |--------------------------------------------------------------------------
     |
@@ -131,7 +147,9 @@ return [
     |
     | A profile is an ordered list of checks. The list order is the execution
     | order. Each entry contains a registered check key, an optional enabled
-    | flag, and optional settings that override the registry defaults.
+    | flag, and optional settings that override the registry defaults. A single
+    | AI check does not need a profile; the fallback profile uses the AI check
+    | key.
     |
     | 'post' => [
     |     'enabled' => true,
