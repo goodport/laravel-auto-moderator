@@ -36,4 +36,24 @@ final class InvalidInputException extends RuntimeException
     {
         return new self('The moderation language must be a non-empty string.');
     }
+
+    public static function emptyModerationFieldKey(): self
+    {
+        return new self('A moderation case field key must be a non-empty string.');
+    }
+
+    public static function emptyModerationFieldLabel(): self
+    {
+        return new self('A moderation case field label must be a non-empty string.');
+    }
+
+    public static function emptyModerationFieldProfile(): self
+    {
+        return new self('A moderation case field profile must be a non-empty string.');
+    }
+
+    public static function duplicateModerationFieldKey(string $key): self
+    {
+        return new self(sprintf('A moderation case field with key "%s" already exists.', $key));
+    }
 }

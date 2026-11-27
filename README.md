@@ -215,6 +215,70 @@ $report->toArray();     // full array representation
 check. Passed and skipped checks are ignored. It returns `null` when no check is
 rejected or undecided.
 
+## Moderation case
+
+A moderation case runs several fields with one shared run context. The package
+does not know application models, statuses, notifications, or translations; the
+application keeps its own decision and persistence logic.
+
+```php
+use Goodport\AutoModerator\Facades\AutoModerator;
+
+$result = AutoModerator::moderationCase()
+    ->subject($post)
+    ->actor($user)
+    ->language('en')
+    ->field(
+        key: 'body',
+        label: 'Post body',
+        profile: 'post',
+        input: ['body' => $post->body],
+    )
+    ->field(
+        key: 'comment',
+        label: 'Comment',
+        profile: 'comment',
+        input: ['body' => $comment->body],
+    )
+    ->run();
+
+if ($result->rejected()) {
+    // The application reads $result->firstReason() and changes its own state.
+}
+```
+
+Rules:
+
+- fields run in the order they are added;
+- a field is skipped without resolving its profile when every input value is
+  `null`, an empty string, a whitespace-only string, or an empty array; `0`,
+  `false`, and non-empty arrays are present values;
+- `actor`, `subject`, `language`, and `audit` apply to every field; the audit
+  context is built once per case;
+- `stop_on_reject` still stops a single field profile, not the case;
+- every non-empty field profile is resolved before the first check runs, so an
+  invalid later profile fails before earlier fields execute;
+- aggregation is rejected → undecided → passed → skipped; an empty case and a
+  case where every field is skipped are `skipped`, never approved;
+- configuration, input, and check-contract errors throw; an unexpected check
+  exception becomes `undecided` for that field and other fields still run;
+- the package does not change application state, send notifications, log, sleep,
+  or persist anything.
+
+`ModerationCaseResult` exposes `state()`, `passed()`, `rejected()`,
+`undecided()`, `allSkipped()`, `results()`, `result($key)`, `firstReason()`,
+and `toArray()`. `firstReason()` returns `Report::firstReason()` of the first
+rejected field in field order; if no field is rejected, it returns
+`Report::firstReason()` of the first undecided field. Because
+`Report::firstReason()` also covers undecided checks, a rejected field may
+return an earlier undecided reason from the same profile.
+
+`ModerationFieldResult` exposes `key`, `label`, `skipped`, `state()`, `report`,
+and `toArray()`. `report` is `null` for a field that did not run. The
+`toArray()` shape is `state`, `passed`, `rejected`, `undecided`, `all_skipped`,
+`first_reason`, and `fields`; each field contains `key`, `label`, `skipped`,
+`state`, and `report` (or `null`).
+
 ## Profiles
 
 A profile is an ordered list. The list order is the execution order.

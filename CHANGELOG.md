@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-27
+
+### Added
+
+- Moderation case API through `AutoModerator::moderationCase()`. A case runs
+  several fields in order with its own key, label, profile, and input, sharing
+  one actor, subject, language, and audit context. Empty fields are skipped
+  without resolving their profile. Profiles for non-empty fields are resolved
+  before any check runs, so an invalid later profile fails before earlier
+  fields execute. Results are available per field through
+  `ModerationCaseResult` and can be exported with `toArray()`.
+- `ModerationField`, `ModerationFieldResult`, and `ModerationCaseResult`.
+- Unit and facade tests for empty fields, field order, collected reasons,
+  rejection priority, undecided results, all-skipped cases, shared run context,
+  duplicate field keys, and the array representation.
+
 ## [1.2.0] - 2026-11-27
 
 ### Added

@@ -14,24 +14,10 @@ final readonly class Report
 
     public function state(): ModerationState
     {
-        $states = array_map(
+        return ModerationState::aggregate(array_map(
             fn (CheckResult $result): ModerationState => $result->state,
             array_values($this->results),
-        );
-
-        if (in_array(ModerationState::Rejected, $states, true)) {
-            return ModerationState::Rejected;
-        }
-
-        if (in_array(ModerationState::Undecided, $states, true)) {
-            return ModerationState::Undecided;
-        }
-
-        if (in_array(ModerationState::Passed, $states, true)) {
-            return ModerationState::Passed;
-        }
-
-        return ModerationState::Skipped;
+        ));
     }
 
     public function passed(): ?bool

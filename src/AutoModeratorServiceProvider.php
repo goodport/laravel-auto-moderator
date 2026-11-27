@@ -2,6 +2,7 @@
 
 namespace Goodport\AutoModerator;
 
+use Goodport\AutoModerator\Orchestration\ModerationCaseRunner;
 use Goodport\AutoModerator\Orchestration\ModerationRunner;
 use Goodport\AutoModerator\Profiles\ProfileResolver;
 use Illuminate\Support\ServiceProvider;
@@ -14,6 +15,7 @@ final class AutoModeratorServiceProvider extends ServiceProvider
 
         $this->app->singleton(ProfileResolver::class);
         $this->app->singleton(ModerationRunner::class);
+        $this->app->singleton(ModerationCaseRunner::class);
         $this->app->singleton(AutoModeratorManager::class);
     }
 

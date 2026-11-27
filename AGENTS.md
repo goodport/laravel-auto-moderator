@@ -27,6 +27,7 @@ src/
   AutoModeratorManager.php             facade entry point
   AutoModeratorServiceProvider.php     config merge, bindings, config publishing
   PendingProfile.php                   fluent input/language/actor/subject/audit/run
+  PendingModerationCase.php            fluent field/language/actor/subject/audit/run
   Facades/AutoModerator.php            facade accessor
   Contracts/
     ModerationCheck.php                check contract
@@ -39,6 +40,9 @@ src/
     Finding.php                        one violation or warning
     CheckResult.php                    one check result
     Report.php                         aggregated profile result
+    ModerationField.php                one case field description
+    ModerationFieldResult.php          result of one case field
+    ModerationCaseResult.php           aggregated case result
   Exceptions/
     InvalidConfigurationException.php  configuration errors
     InvalidInputException.php          missing or invalid input
@@ -63,6 +67,7 @@ src/
     ResolvedCheck.php                  executable check entry
   Orchestration/
     ModerationRunner.php               ordered execution and aggregation
+    ModerationCaseRunner.php           ordered case field execution and aggregation
     RunContextFactory.php              default actor, request URL, language, audit
 tests/
   TestCase.php                         Testbench base with AI providers and SQLite
@@ -85,6 +90,17 @@ $report = AutoModerator::profile('post')
 A single AI check can run by its AI check key. The fallback profile returns its
 result under the registered AI check key (`ai` by default), not the profile key.
 
+A moderation case runs several fields with one shared run context:
+
+```php
+$result = AutoModerator::moderationCase()
+    ->subject($post)
+    ->language('en')
+    ->field(key: 'body', label: 'Post body', profile: 'post', input: ['body' => $body])
+    ->field(key: 'comment', label: 'Comment', profile: 'comment', input: ['body' => $comment])
+    ->run();
+```
+
 - `AutoModerator::profile(string $profile): PendingProfile`
 - `PendingProfile::input(array $fields): self`
 - `PendingProfile::language(string $language): self`
@@ -92,6 +108,18 @@ result under the registered AI check key (`ai` by default), not the profile key.
 - `PendingProfile::subject(Model $subject): self`
 - `PendingProfile::audit(AuditContext $audit): self`
 - `PendingProfile::run(): Report`
+- `AutoModerator::moderationCase(): PendingModerationCase`
+- `PendingModerationCase::field(string $key, string $label, string $profile, array $input): self`
+- `PendingModerationCase::language(string $language): self`
+- `PendingModerationCase::actor(Model|Authenticatable $actor): self`
+- `PendingModerationCase::subject(Model $subject): self`
+- `PendingModerationCase::audit(AuditContext $audit): self`
+- `PendingModerationCase::run(): ModerationCaseResult`
+
+`ModerationCaseResult` exposes `state()`, `passed()`, `rejected()`,
+`undecided()`, `allSkipped()`, `results()`, `result($key)`, `firstReason()`,
+and `toArray()`. `ModerationFieldResult` exposes `key`, `label`, `skipped`,
+`state()`, `report`, and `toArray()`; `report` is `null` for a skipped field.
 
 `Report` exposes `state()`, `passed()`, `rejected()`, `undecided()`,
 `allSkipped()`, `results()`, `result()`, `firstReason()`, `messages()`,
@@ -156,6 +184,27 @@ Unknown profile, entry, registry, and settings keys are configuration errors.
 - `Report::firstReason()` returns the first reason or error from a rejected or
   undecided check. Passed and skipped checks are ignored; otherwise it returns
   `null`.
+- A moderation case uses the same aggregation over its fields: rejected →
+  undecided → passed → skipped. A case without fields and a case where every
+  field is skipped are `skipped`, never approved.
+- A case field is skipped when every input value is `null`, an empty string, a
+  whitespace-only string, or an empty array. A skipped field is not resolved and
+  has no report. Strings are checked, not trimmed or changed.
+- `ModerationCaseResult::firstReason()` returns `Report::firstReason()` of the
+  first rejected field in field order, then of the first undecided field. A
+  rejected field may therefore return an earlier undecided reason from the same
+  profile.
+- The case resolves every non-empty field profile before running any check, so
+  an invalid later profile fails before earlier fields run or produce audit
+  records.
+- The case resolves its audit context and default language once and shares them
+  with every field. An explicit `->audit()` still wins; `actor`, `subject`, and
+  `language` apply to all fields.
+- A case keeps configuration, input, and check-contract errors visible. An
+  unexpected exception inside a check becomes `undecided` for that field, and
+  the remaining fields still run.
+- Duplicate case field keys, empty keys, empty labels, and empty profile names
+  throw `InvalidInputException` when the field is added.
 
 ## Extension points
 
@@ -208,9 +257,11 @@ composer validate --strict
 Tests use PHPUnit and Orchestra Testbench. Feature tests cover profile order,
 stop-on-reject, warnings, all-skipped, every built-in check, a custom check,
 direct and policy AI checks, fallback profiles, AI fake agents, Perspective
-HTTP fakes, automatic run context, and configuration/input errors. Unit tests
-cover report aggregation, result invariants, single AI result mapping, fallback
-profile resolution, and config merging.
+HTTP fakes, automatic run context, configuration/input errors, moderation case
+order, empty fields, shared context, collected reasons, and duplicate field
+keys. Unit tests cover report aggregation, case aggregation, field emptiness,
+result invariants, single AI result mapping, fallback profile resolution, and
+config merging.
 
 The base test case registers the AI, journal, resilience, AI moderator, and
 auto moderator providers and uses an in-memory SQLite database for the AI

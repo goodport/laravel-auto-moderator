@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\Facade;
 
 /**
  * @method static \Goodport\AutoModerator\PendingProfile profile(string $profile)
+ * @method static \Goodport\AutoModerator\PendingModerationCase moderationCase()
  *
  * @see AutoModeratorManager
  */
