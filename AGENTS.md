@@ -23,13 +23,17 @@ Background:
 2. each model is queued as a unique `RunModerationJob` keyed by morph type, ID, and scenario;
 3. the job creates a `ModerationRun`, builds a moderation case from
    `Moderatable::moderationFields()`, saves `ModerationResult` rows, sets the
-   final run status, and publishes `ModerationCompleted`.
+   final run status, calls the registered result handler, and publishes the
+   internal `ModerationCompleted` event.
 
-The package owns the background job, command, event, tables, and models. It does
-not own application models, statuses, notifications, or domain effects, and it
-stores only automatic moderation results. The AI check delegates the AI pipeline
-to `goodport/laravel-ai-moderator`; the profanity check delegates dictionaries
-to `consoletvs/profanity`.
+The package owns the background job, command, event, tables, models, outcome
+reader, and handler registry. It does not own application models, statuses,
+notifications, or domain effects, and it stores only automatic moderation
+results. The application integrates through `AutoModerator`, the public DTOs,
+the contracts, and `Concerns\HasModerationRuns`; internal classes are
+`@internal`. The AI check delegates the AI pipeline to
+`goodport/laravel-ai-moderator`; the profanity check delegates dictionaries to
+`consoletvs/profanity`.
 
 ## Directory map
 
@@ -47,9 +51,15 @@ src/
     ValidatesSettings.php              optional early settings validation contract
     Moderatable.php                    model that can be moderated in the background
     ModerationSource.php               source of pending models
+    ModerationResultHandler.php        application handler for completed runs
+  Concerns/
+    HasModerationRuns.php              public relations and query scopes
   Moderation/
     ModerationState.php                passed | rejected | undecided | skipped
-    ModerationRunStatus.php            running | approved | rejected | needs_review | skipped | failed
+    ModerationRunStatus.php            internal run status enum
+    ModerationOutcome.php              public background run outcome
+    ModerationFieldOutcome.php         public field outcome
+    ModerationOutcomeReader.php        internal outcome reader
     FindingSeverity.php                low | medium | high
     AuditContext.php                   neutral audit DTO
     ModerationContext.php              check input: key, fields, language, settings, audit
@@ -60,14 +70,15 @@ src/
     ModerationFieldResult.php          result of one case field
     ModerationCaseResult.php           aggregated case result
   Models/
-    ModerationRun.php                  background run
-    ModerationResult.php               one stored check result
+    ModerationRun.php                  internal background run
+    ModerationResult.php               internal stored check result
   Jobs/
-    RunModerationJob.php               unique background moderation attempt
+    RunModerationJob.php               internal unique background attempt
   Events/
-    ModerationCompleted.php            completed run event
+    ModerationCompleted.php            internal completed run event
   Console/
-    DispatchModerationCommand.php      queues jobs for registered sources
+    DispatchModerationCommand.php      internal queue dispatcher
+    CleanupStaleModerationRunsCommand.php internal stale run cleanup
   Exceptions/
     InvalidConfigurationException.php  configuration errors
     InvalidInputException.php          missing or invalid input
@@ -77,6 +88,10 @@ src/
     SettingsGuard.php                  shared built-in settings validation
     InputFields.php                    declared field selection
     TextFields.php                     text field selection and UTF-8 validation
+    ModerationQueryGuard.php           internal status/state/scenario validation
+    ModerationValue.php                internal non-empty string helpers
+    ModerationResultHandlerRegistry.php internal handler registry
+    ModerationRunForgetter.php         internal run and result deletion
   Checks/
     StopWords/                         configured words and phrases
     Profanity/                         dictionary languages and wrapper
@@ -93,11 +108,13 @@ src/
   Orchestration/
     ModerationRunner.php               ordered execution and aggregation
     ModerationCaseRunner.php           ordered case field execution and aggregation
+    ModerationDispatcher.php           internal background job dispatcher
     RunContextFactory.php              default actor, request URL, language, audit
 tests/
   TestCase.php                         Testbench base with AI providers and SQLite
   Fixtures/                            custom check and service fixtures
   Feature/                             facade-level scenarios
+    Background/                        background API, handlers, outcomes, scopes
   Unit/                                report, result, and merge logic
 ```
 
@@ -157,50 +174,96 @@ and `toArray()`. `ModerationFieldResult` exposes `key`, `label`, `skipped`,
 
 ## Background moderation
 
-- `Contracts\Moderatable` — application model contract: `moderationScenario()`,
-  `moderationFields()` (an array of `ModerationField`), `moderationActor()`, and
-  `moderationLanguage()`.
-- `Contracts\ModerationSource` — `pending(): iterable` returns models to queue.
-- `Jobs\RunModerationJob` — accepts only the morph type, ID, and scenario. It is
-  unique for `morph + id + scenario` with a finite
-  `background.unique_for_seconds` lock.
-- `Console\DispatchModerationCommand` — `auto-moderator:dispatch` iterates
-  `auto-moderator.background.sources` and queues one job per pending model.
-- `Console\CleanupStaleModerationRunsCommand` — `auto-moderator:cleanup` marks
-  `running` runs older than `background.stale_after_minutes` as `failed`.
-- `Models\ModerationRun` — `moderatable()` and `results()` relations; `status`
-  casts to `ModerationRunStatus`.
-- `Models\ModerationResult` — `moderationRun()` relation; `state` casts to
-  `ModerationState`, `findings` and `details` cast to arrays.
-- `Events\ModerationCompleted` — carries the saved `ModerationRun` with loaded
-  results. It is published after the run is stored and is not published for
-  `failed` runs.
+Public API:
 
-A record in `auto_moderator_runs` is one attempt, not a job state. The job
-creates it in `running` with `started_at`, and a retry creates a new attempt
-while the failed attempt stays in history. The scenario passed to the job must
-match `Moderatable::moderationScenario()`.
+- `AutoModerator::dispatch(Model $model, ?int $delaySeconds = null): void` —
+  queues a unique run for `morph + id + scenario`; the scenario comes from
+  `Moderatable::moderationScenario()`. Null or zero delay dispatches
+  immediately; a negative delay is `InvalidArgumentException`.
+- `AutoModerator::latest(Model $model, ?string $scenario = null): ?ModerationOutcome`
+  — the latest run by maximum run ID, optionally within a scenario.
+- `AutoModerator::latestFor(iterable $models, ?string $scenario = null): array`
+  — outcomes for a homogeneous list of persisted models, keyed by primary key
+  in first-seen order. It uses a bounded number of queries. Mixed model classes,
+  unpersisted models, and non-`Moderatable` models are `InvalidArgumentException`.
+- `AutoModerator::statuses(): array` — public status strings.
+- `AutoModerator::registerHandler(string $modelClass, string $handlerClass): void`
+  — validates both classes and stores the mapping; the last registration wins.
+- `AutoModerator::forget(Model $model): void` — deletes all runs and results of
+  the model in a transaction, without events.
 
-The run context is built explicitly by the job: `context.language` is
-`moderationLanguage()` as returned (including `null`), and `context.audit` is
-built from `moderationActor()` and the moderated model with `request_url` set to
-`null`. `AuditContext::fromActorAndSubject()` is shared by synchronous and
-background runs.
+Public DTOs:
 
-Results are written per check: one `ModerationResult` row per `CheckResult` of
-a non-skipped field with `field_key`, `check_key`, `state`, `reason`, `error`,
-`findings`, and `details`. `reason` is the moderation reason; `error` is a
-technical check failure. Skipped checks of non-empty fields are stored; empty
-fields produce no rows.
+- `ModerationOutcome` — `scenario`, `status`, immutable `fields` map;
+  `isRunning`, `isApproved`, `isRejected`, `needsReview`, `isSkipped`,
+  `isFailed`, `fields()`, `field()`, `failed()`, `failedAny()`,
+  `reasonsForFields()`, `toArray()`. Status constants are `STATUS_*`; status
+  values are strings.
+- `ModerationFieldOutcome` — `key`, `label`, `state`, `isPassed`, `isRejected`,
+  `isUndecided`, `isSkipped`, `needsReview`, `hasTechnicalError`, `reason`,
+  `error`, `details`, `findings`, `reasonsByCheck`, `toArray()`. State constants
+  are `STATE_*`; state values are strings.
+- `failed()` covers rejected, undecided, and technical errors. A technical error
+  is represented by an undecided check with `error`; it raises the case and run
+  to `needs_review`.
+- `details` merges check details with `array_replace` in profile order; later
+  checks win. `findings` is a flat list with `check_key` added to each finding.
+  `reasonsByCheck` includes rejected, undecided, and checks with an error.
+- `reasonsForFields()` returns `field_key => "Label: reason"` for failed fields
+  using `reason ?? error`; passed and skipped fields are omitted.
+- The DTO never exposes the run model, result model, or internal identifiers.
 
-Run status mapping: any rejection → `rejected`; otherwise any undecided →
-`needs_review`; otherwise any passed → `approved`; otherwise `skipped`. There is
-no separate manual-review flag in this layer.
+Public trait `Concerns\HasModerationRuns`:
 
-A configuration or job error marks the run `failed`, sets `finished_at` and
-`reason`, and rethrows. Missing models return silently. Not-`Moderatable` models
-and scenario mismatches fail the run. Sources that return a non-`Moderatable`
-model fail before a job is queued.
+- relations `moderationRuns()` and `latestModerationRun()`;
+- `whereLatestModerationStatus(string|array $status, ?string $scenario = null)`;
+- `whereHasModerationStatus(string|array $status, ?string $scenario = null)`;
+- `whereHasModerationRun(?string $scenario = null)`;
+- `whereHasModerationResult(string $fieldKey, ?string $scenario = null, ?string $state = null)`;
+- `whereLatestModerationResult(string $fieldKey, ?string $scenario = null, ?string $state = null)`.
+
+Status and state values are validated against the public lists; invalid values
+throw `InvalidArgumentException`. The latest scopes use a correlated
+`not exists` subquery, so they do not create N+1.
+
+Handler contract:
+
+- `Contracts\ModerationResultHandler::handle(Model $model, ModerationOutcome $outcome): void`.
+- The job looks up `$model::class`, then `getMorphClass()`. Registration accepts
+  a model class or a mapped morph alias. A missing handler is a no-op. The
+  handler is called after commit and before the internal event, only for
+  `approved`, `rejected`, `needs_review`, and `skipped`.
+- A handler exception propagates to the queue/worker and does not change the
+  completed run status. Handlers must be idempotent because a retry can call
+  them again.
+
+Internal implementation:
+
+- `Jobs\RunModerationJob`, `Models\ModerationRun`, `Models\ModerationResult`,
+  `Events\ModerationCompleted`, `ModerationRunStatus`, the commands, the reader,
+  registry, forgetter, dispatcher, and table schema are `@internal`.
+- A record in `auto_moderator_runs` is one attempt, not a job state. The job
+  creates it in `running` with `started_at`; a retry creates a new attempt while
+  the failed attempt stays in history.
+- The run stores `field_labels` from `moderationFields()` at start. Terminal
+  successful outcomes include every declared field; a declared field without a
+  result row is `skipped`. Running and failed outcomes include only real result
+  rows. Old runs without labels use the field key as the label and include only
+  result fields.
+- The context is built explicitly by the job: `context.language` is
+  `moderationLanguage()` as returned, and `context.audit` is built from
+  `moderationActor()` and the moderated model with `request_url = null`.
+- Results are written per check with `field_key`, `check_key`, `state`,
+  `reason`, `error`, `findings`, `details`. `reason` is the moderation reason;
+  `error` is a technical failure. Skipped checks of non-empty fields are stored;
+  empty fields produce no rows.
+- Run status mapping: any rejection → `rejected`; otherwise any `undecided`
+  (including technical errors) → `needs_review`; otherwise any passed →
+  `approved`; otherwise `skipped`.
+- A configuration or job error marks the run `failed`, sets `finished_at` and
+  `reason`, and rethrows. Missing models return silently. Not-`Moderatable`
+  models and scenario mismatches fail the run. Sources returning a
+  non-`Moderatable` model fail before a job is queued.
 
 ## Configuration resolution
 
@@ -277,6 +340,28 @@ Unknown profile, entry, registry, and settings keys are configuration errors.
   the remaining fields still run.
 - Duplicate case field keys, empty keys, empty labels, and empty profile names
   throw `InvalidInputException` when the field is added.
+- Background field state uses the same priority: rejected → rejected; otherwise
+  undecided → undecided; otherwise passed → passed; otherwise skipped. A
+  technical error is represented by an undecided check with `error`.
+- Empty `reason` and `error` strings are treated as absent. The first non-empty
+  reason and the first non-empty error win; an empty reason does not hide a
+  later reason or a technical error.
+- Background run status maps the case state: rejected → `rejected`; undecided →
+  `needs_review`; passed → `approved`; skipped → `skipped`. A technical error is
+  never `approved`.
+- Run and field state priority is centralized in `ModerationState::aggregate`;
+  sync and background APIs use one state-based rule. A non-empty `error` is
+  valid only with the `undecided` state; any other combination throws
+  `InvalidCheckResultException`.
+- Field `details` merge with `array_replace` in profile order; later checks win.
+  `findings` is a flat list with `check_key` in every element. `reasonsByCheck`
+  includes rejected, undecided, and checks with an error. `reasonsForFields()`
+  skips passed and skipped fields and uses `reason ?? error`.
+- Background outcomes expose only public strings, arrays, and DTOs; they never
+  expose `ModerationRun` or `ModerationResult`.
+- Handler exceptions propagate to the queue and do not change a completed run.
+  The handler is called once per job attempt, after commit and before the
+  internal event.
 
 ## Extension points
 
@@ -285,6 +370,10 @@ Unknown profile, entry, registry, and settings keys are configuration errors.
 - `Contracts\Moderatable` — application model that can be moderated in the
   background.
 - `Contracts\ModerationSource` — application source of pending models.
+- `Contracts\ModerationResultHandler` — application handler called by the job
+  for completed runs.
+- `Concerns\HasModerationRuns` — relations and query scopes for moderated
+  models.
 - `config/auto-moderator.php`:
   - `enabled` — global switch;
   - `defaults` — shared profile defaults;
@@ -340,23 +429,40 @@ direct and policy AI checks, fallback profiles, AI fake agents, Perspective
 HTTP fakes, automatic run context, configuration/input errors, moderation case
 order, empty fields, shared context, collected reasons, duplicate field keys,
 background run creation, result mapping, run statuses, failed and missing
-models, morph maps, unique dispatch, source traversal, and the completion event.
-Unit tests cover report aggregation, case aggregation, field emptiness, result
-invariants, single AI result mapping, fallback profile resolution, and config
-merging.
+models, morph maps, unique dispatch, source traversal, the completion event,
+result handlers, latest and latestFor outcomes, N+1-free bulk reads, query
+scopes, delayed dispatch, and forget. Unit tests cover report aggregation, case
+aggregation, field emptiness, result invariants, public outcome DTOs, single AI
+result mapping, fallback profile resolution, and config merging.
 
 The base test case registers the AI, journal, resilience, AI moderator, and
-auto moderator providers and uses an in-memory SQLite database for the AI
-dependency tables. Background tests load an extra fixture migration for their
-test model.
+auto moderator providers and uses an in-memory SQLite database by default.
+CI runs the suite on SQLite and MySQL; the MySQL job uses the environment
+database configuration. Background tests load an extra fixture migration for
+their test model.
 
 ## Maintenance rules
 
+- Application-facing background imports are limited to `AutoModerator`,
+  `ModerationOutcome`, `ModerationFieldOutcome`, synchronous `Report`,
+  `CheckResult`, `ModerationState`, `AuditContext`, `PendingProfile`,
+  `PendingModerationCase`, `Contracts\Moderatable`, `Contracts\ModerationSource`,
+  `Contracts\ModerationResultHandler`, `Moderation\ModerationField`, and
+  `Concerns\HasModerationRuns`. Keep every other background class `@internal`.
+- Custom checks keep using the public check contracts and DTOs
+  (`ModerationCheck`, `ValidatesSettings`, `CheckResult`, `Finding`,
+  `FindingSeverity`, `ModerationContext`).
+- Do not expose `ModerationRun`, `ModerationResult`, `RunModerationJob`,
+  `ModerationCompleted`, `ModerationRunStatus`, or table columns through public
+  DTOs, scopes, or documentation.
 - Do not add application models, statuses, notifications, translations, admin
   screens, or browser tests.
 - The background layer owns only `auto_moderator_runs`, `auto_moderator_results`,
-  their models, the job, the command, and the event. Do not add domain effects,
-  manual moderator decisions, or application-specific branches.
+  their models, the job, the commands, the internal event, the outcome reader,
+  the handler registry, the dispatcher, and the forgetter. Do not add domain
+  effects, manual moderator decisions, or application-specific branches.
+- Call result handlers from the job after commit and before the internal event.
+  Do not make the event the application extension point.
 - Reuse `moderationCase()` in the background job. Do not duplicate the check
   engine.
 - Do not copy AI moderator internals. Use its public check, policy, report, and

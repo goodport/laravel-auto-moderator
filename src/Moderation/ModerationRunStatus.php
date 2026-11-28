@@ -4,6 +4,8 @@ namespace Goodport\AutoModerator\Moderation;
 
 /**
  * Lifecycle status of a background moderation run.
+ *
+ * @internal
  */
 enum ModerationRunStatus: string
 {
@@ -16,6 +18,8 @@ enum ModerationRunStatus: string
 
     /**
      * Map a moderation case result to the final run status.
+     *
+     * A technical check error is represented by the undecided case state.
      */
     public static function fromCaseResult(ModerationCaseResult $result): self
     {

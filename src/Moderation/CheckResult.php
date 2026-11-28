@@ -3,6 +3,7 @@
 namespace Goodport\AutoModerator\Moderation;
 
 use Goodport\AutoModerator\Exceptions\InvalidCheckResultException;
+use Goodport\AutoModerator\Support\ModerationValue;
 
 /**
  * Result of one moderation check.
@@ -119,6 +120,12 @@ final readonly class CheckResult
         if ($this->state !== ModerationState::Rejected && $hasBlockingFinding) {
             throw new InvalidCheckResultException(
                 sprintf('Check "%s" returned a blocking finding with state "%s".', $this->check, $this->state->value),
+            );
+        }
+
+        if ($this->state !== ModerationState::Undecided && ModerationValue::hasValue($this->error)) {
+            throw new InvalidCheckResultException(
+                sprintf('Check "%s" returned an error with state "%s".', $this->check, $this->state->value),
             );
         }
     }

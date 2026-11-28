@@ -5,10 +5,11 @@ Synchronous and background content moderation for Laravel applications.
 The package runs an ordered list of checks over named input fields, collects one
 report, and returns a final state: `passed`, `rejected`, `undecided`, or
 `skipped`. The optional background layer queues moderation, stores automatic
-results, and publishes a completion event. The package does not know application
-models, statuses, notifications, or domain effects. The run context uses the
-authenticated user and the current request URL by default, and falls back to the
-application locale for the language; each value can be overridden per run.
+results, and calls the registered result handler. The package does not know
+application models, statuses, notifications, or domain effects. The run context
+uses the authenticated user and the current request URL by default, and falls
+back to the application locale for the language; each value can be overridden
+per run.
 
 ## Requirements
 
@@ -178,9 +179,9 @@ context. When it is disabled, no automatic context is built, but an explicit
 `->audit()` still works. An explicit `->audit()` replaces the automatic context
 entirely.
 
-Synchronous runs do not persist the context. Background runs store it in
-`auto_moderator_runs.context`. The AI check also forwards audit data to the AI
-moderator audit table.
+Synchronous runs do not persist the context. Background runs build an explicit
+audit context from the actor and the moderated model. The AI check also forwards
+audit data to the AI moderator audit table.
 
 ## Result semantics
 
@@ -286,17 +287,21 @@ and `toArray()`. `report` is `null` for a field that did not run. The
 
 ## Background moderation
 
-The background layer queues moderation, stores automatic results, and publishes
-an event. The application implements two contracts and registers sources; the
-package owns the job, tables, statuses, and the completion event.
+The background layer queues moderation, stores automatic results, and exposes a
+public outcome. The application implements two contracts, optionally registers a
+result handler, and uses the public `AutoModerator` API. Internal models, jobs,
+events, and storage stay inside the package.
 
 ```php
+use Goodport\AutoModerator\Concerns\HasModerationRuns;
 use Goodport\AutoModerator\Contracts\Moderatable;
 use Goodport\AutoModerator\Contracts\ModerationSource;
 use Goodport\AutoModerator\Moderation\ModerationField;
 
 final class Post extends Model implements Moderatable
 {
+    use HasModerationRuns;
+
     public function moderationScenario(): string
     {
         return 'post';
@@ -341,75 +346,152 @@ Register sources and an optional queue:
 ],
 ```
 
-Run the dispatcher, for example from the scheduler:
-
-```bash
-php artisan auto-moderator:dispatch
-```
-
-Mark runs that stayed `running` for too long as failed:
-
-```bash
-php artisan auto-moderator:cleanup
-```
-
-How a run works:
-
-- every pending item must be an Eloquent model implementing `Moderatable`;
-  otherwise the command fails with a configuration error before queueing;
-- the command queues `RunModerationJob` with the morph type, ID, and scenario;
-  the dispatched job is unique for `morph + id + scenario` with a finite
-  `background.unique_for_seconds` lock;
-- the job creates a `ModerationRun` in `running`, resolves the model, builds
-  `moderationCase()` from `moderationFields()`, and saves every check result;
-- each field keeps its own profile, so one scenario may run different profiles
-  for different fields;
-- the scenario passed to the job must match `moderationScenario()`; a mismatch
-  marks the run `failed`;
-- `context` stores the language and the audit context. The moderatable model is
-  the audit subject, and `request_url` is `null` because the job runs in a
-  queue;
-- empty fields produce no result rows; a case without non-empty fields is
-  `skipped`;
-- configuration and job errors mark the run `failed`, set `finished_at` and
-  `reason`, and rethrow. They are never converted to `approved` or `skipped`;
-- `ModerationCompleted` is published with the run and its loaded results after
-  the run is committed. It is not published for `failed` runs;
-- the package writes only `auto_moderator_runs` and `auto_moderator_results`.
-  It does not change application state or record manual moderator decisions.
-
-Run statuses:
-
-| Status | Meaning |
-| --- | --- |
-| `running` | The attempt is in progress. |
-| `approved` | Every check passed. |
-| `rejected` | At least one blocking rejection. |
-| `needs_review` | No rejection, but at least one `undecided` check. |
-| `skipped` | There was nothing to check. |
-| `failed` | The run could not complete. |
-
-Listen to the completion event:
+Use the public API:
 
 ```php
-use Goodport\AutoModerator\Events\ModerationCompleted;
+use Goodport\AutoModerator\Facades\AutoModerator;
 
-Event::listen(function (ModerationCompleted $event): void {
-    $run = $event->run; // status, reason, results
-});
+AutoModerator::dispatch($post);
+AutoModerator::dispatch($post, 60);
+
+$outcome = AutoModerator::latest($post);
+$outcomes = AutoModerator::latestFor($posts);
+$statuses = AutoModerator::statuses();
+
+AutoModerator::forget($post);
 ```
 
-Stored data:
+`forget()` removes all stored runs and results for the model; it does not cancel
+an already queued job. `auto-moderator:dispatch` queues pending models from
+registered sources. `auto-moderator:cleanup` marks stale `running` runs as
+failed.
 
-- `ModerationRun` — `moderatable_type`, `moderatable_id`, `scenario`, `status`,
-  `reason`, `context`, `started_at`, `finished_at`, and the `results` relation;
-- `ModerationResult` — `field_key`, `check_key`, `state`, `reason`, `error`,
-  `findings`, `details`, and the `moderationRun` relation. One row is one check
-  result; `error` is a technical check failure, separate from the moderation
-  `reason`.
+### Result handler
 
-The background schema belongs to the package: migrations are loaded
-automatically and are not published.
+An application handler is a separate class implementing
+`ModerationResultHandler`:
+
+```php
+use Goodport\AutoModerator\Contracts\ModerationResultHandler;
+use Goodport\AutoModerator\Moderation\ModerationOutcome;
+
+final class PostModerationHandler implements ModerationResultHandler
+{
+    public function handle(Model $model, ModerationOutcome $outcome): void
+    {
+        if ($outcome->isRejected()) {
+            $reasons = $outcome->reasonsForFields(['body', 'title']);
+            // ...
+        }
+    }
+}
+```
+
+Register it by model class or mapped morph alias in a service provider:
+
+```php
+AutoModerator::registerHandler(Post::class, PostModerationHandler::class);
+
+// Or by the morph alias when the model uses a morph map:
+AutoModerator::registerHandler('post', PostModerationHandler::class);
+```
+
+The package calls the handler after a completed run for `approved`, `rejected`,
+`needs_review`, and `skipped`; never for `running` or `failed`. A missing handler
+is a no-op. A handler exception fails the queue job but does not change the
+completed run status. Handlers should be idempotent because a retried job can
+call them again.
+
+### Outcome
+
+`ModerationOutcome` exposes:
+
+- `scenario` and `status`;
+- `isRunning()`, `isApproved()`, `isRejected()`, `needsReview()`,
+  `isSkipped()`, and `isFailed()`;
+- `fields()` and `field($key)`;
+- `failed($key)` and `failedAny($keys)` for rejected, undecided, or technically
+  failed fields;
+- `reasonsForFields($keys)` with ready `field_key => "Label: reason"` strings;
+- `toArray()`.
+
+`ModerationFieldOutcome` exposes `key`, `label`, `state`, `isPassed()`,
+`isRejected()`, `isUndecided()`, `isSkipped()`, `needsReview()`,
+`hasTechnicalError()`, `reason`, `error`, `details`, `findings`, and
+`reasonsByCheck`. `details` merges check details in profile order; every finding
+contains its `check_key`.
+
+Public status values are `ModerationOutcome::STATUS_*`, and public field states
+are `ModerationFieldOutcome::STATE_*`. Use `AutoModerator::statuses()` for
+filters. The application does not import internal enums.
+
+### Queries and scopes
+
+The trait provides relations and local scopes:
+
+```php
+Post::query()->whereLatestModerationStatus('needs_review');
+Post::query()->whereHasModerationStatus(['rejected', 'needs_review']);
+Post::query()->whereHasModerationRun();
+Post::query()->whereHasModerationResult('checklist');
+Post::query()->whereLatestModerationResult('checklist', null, 'passed');
+```
+
+- `whereLatestModerationStatus` filters by the latest run;
+- `whereHasModerationStatus` filters by any run;
+- `whereHasModerationRun` checks any run, optionally within a scenario;
+- `whereHasModerationResult` checks any run for a field result;
+- `whereLatestModerationResult` checks the latest run for a field result.
+
+Each scope accepts an optional scenario, and result scopes accept an optional
+field state. Invalid statuses, states, scenarios, and field keys throw
+`InvalidArgumentException`.
+
+### Lifecycle and storage
+
+- every pending item must be an Eloquent model implementing `Moderatable`;
+  otherwise the command fails before queueing;
+- `dispatch()` and `auto-moderator:dispatch` queue a unique job for
+  `morph + id + scenario`;
+- the job creates a run in `running`, builds `moderationCase()` from
+  `moderationFields()`, and stores one result row per check;
+- each field keeps its own profile; the scenario must match
+  `moderationScenario()`;
+- empty fields produce no result rows; declared fields are still visible in the
+  outcome for terminal successful runs;
+- technical check errors become `needs_review`, never `approved`;
+- a configuration or job error marks the run `failed` and rethrows; failed runs
+  do not call the handler;
+- the package writes only its own background tables and does not change
+  application state or record manual moderator decisions.
+
+Run statuses: `running`, `approved`, `rejected`, `needs_review`, `skipped`,
+`failed`. `needs_review` replaces a separate manual-review flag in the
+application.
+
+`latestFor()` accepts a homogeneous list of persisted models and returns
+outcomes keyed by primary key in first-seen order. It uses a bounded number of
+queries and does not create N+1. Models without runs are omitted. Mixed model
+classes and unpersisted models throw `InvalidArgumentException`.
+
+### Background imports
+
+For the background layer, the application imports only:
+
+- `AutoModerator`;
+- `ModerationOutcome`, `ModerationFieldOutcome`, synchronous `Report`,
+  `CheckResult`, `ModerationState`, `AuditContext`, `PendingProfile`, and
+  `PendingModerationCase`;
+- `Contracts\Moderatable`, `Contracts\ModerationSource`, and
+  `Contracts\ModerationResultHandler`;
+- `Moderation\ModerationField`;
+- `Concerns\HasModerationRuns`.
+
+Custom checks continue to use the existing public check contracts and DTOs.
+Internal models, events, jobs, enums, readers, and table details are marked
+`@internal` and must not be imported by the application. The background schema
+belongs to the package: migrations are loaded automatically and are not
+published.
 
 ## Profiles
 
@@ -805,6 +887,8 @@ inconsistent result throws `InvalidCheckResultException`.
 - Configuration errors throw `InvalidConfigurationException`.
 - Missing or invalid input throws `InvalidInputException`.
 - An inconsistent check result throws `InvalidCheckResultException`.
+- A non-empty `error` is allowed only with the `undecided` state; any other
+  state with an error throws `InvalidCheckResultException`.
 - An exception inside a check, a transport failure, or a malformed external
   response becomes `undecided`.
 - `undecided` is never converted to `passed`.
@@ -830,6 +914,10 @@ composer test
 composer format
 composer validate --strict
 ```
+
+CI runs the suite on SQLite and MySQL. To run the MySQL suite locally, set
+`DB_CONNECTION=mysql` and the usual `DB_HOST`, `DB_PORT`, `DB_DATABASE`,
+`DB_USERNAME`, and `DB_PASSWORD` environment variables.
 
 ## License
 

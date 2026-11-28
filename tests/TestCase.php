@@ -38,13 +38,32 @@ abstract class TestCase extends Orchestra
 
     protected function defineEnvironment($app): void
     {
-        $app['config']->set('database.default', 'testing');
-        $app['config']->set('database.connections.testing', [
-            'driver' => 'sqlite',
-            'database' => ':memory:',
-            'prefix' => '',
-            'foreign_key_constraints' => true,
-        ]);
+        $connection = getenv('DB_CONNECTION') ?: 'testing';
+
+        if ($connection === 'testing') {
+            $app['config']->set('database.default', 'testing');
+            $app['config']->set('database.connections.testing', [
+                'driver' => 'sqlite',
+                'database' => ':memory:',
+                'prefix' => '',
+                'foreign_key_constraints' => true,
+            ]);
+        } else {
+            $app['config']->set('database.default', $connection);
+            $app['config']->set("database.connections.{$connection}", [
+                'driver' => $connection,
+                'host' => getenv('DB_HOST') ?: '127.0.0.1',
+                'port' => (int) (getenv('DB_PORT') ?: 3306),
+                'database' => getenv('DB_DATABASE') ?: 'test',
+                'username' => getenv('DB_USERNAME') ?: 'root',
+                'password' => getenv('DB_PASSWORD') ?: '',
+                'charset' => 'utf8mb4',
+                'collation' => 'utf8mb4_unicode_ci',
+                'prefix' => '',
+                'foreign_key_constraints' => true,
+            ]);
+        }
+
         $app['config']->set('ai-moderator.defaults.provider', 'openai');
         $app['config']->set('ai-moderator.defaults.model', 'gpt-test');
         $app['config']->set('ai-moderator.defaults.strict', false);

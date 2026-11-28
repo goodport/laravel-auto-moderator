@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-28
+
+### Added
+
+- Public background outcome DTOs `ModerationOutcome` and
+  `ModerationFieldOutcome` with string status and state constants, field
+  reasons, details, findings, and `toArray()`.
+- Public API `AutoModerator::dispatch()`, `latest()`, `latestFor()`,
+  `statuses()`, `registerHandler()`, and `forget()`.
+- `ModerationResultHandler` contract called by the package after a completed
+  run. `ModerationCompleted` remains internal and is no longer the extension
+  point. Handlers can be registered by model class or mapped morph alias.
+- `Concerns\HasModerationRuns` with status and result scopes.
+- `field_labels` stored on runs so outcomes keep declared field labels,
+  including fields without result rows.
+
+### Changed
+
+- Background models, events, jobs, run status enum, commands, reader, handler
+  registry, dispatcher, and forgetter are marked `@internal` and removed from
+  the public API documentation. `ModerationRunStatus` is no longer part of the
+  application integration.
+- Sync and background statuses use one state-based rule. A non-empty `error` is
+  valid only with the `undecided` state; any other combination throws
+  `InvalidCheckResultException`.
+
+### Fixed
+
+- Empty `reason` and `error` strings are treated as absent when selecting field
+  reasons, technical errors, and per-check reasons.
+- A check result with a non-empty error and a non-undecided state is rejected
+  instead of being interpreted differently by sync and background APIs.
+- The test suite includes a MySQL job next to the SQLite job.
+
+### Removed
+
+- Public documentation of Eloquent models, jobs, events, and internal status
+  enums for the background layer.
+
 ## [1.4.0] - 2026-11-28
 
 ### Added

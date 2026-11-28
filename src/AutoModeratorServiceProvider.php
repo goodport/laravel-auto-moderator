@@ -4,9 +4,13 @@ namespace Goodport\AutoModerator;
 
 use Goodport\AutoModerator\Console\CleanupStaleModerationRunsCommand;
 use Goodport\AutoModerator\Console\DispatchModerationCommand;
+use Goodport\AutoModerator\Moderation\ModerationOutcomeReader;
 use Goodport\AutoModerator\Orchestration\ModerationCaseRunner;
+use Goodport\AutoModerator\Orchestration\ModerationDispatcher;
 use Goodport\AutoModerator\Orchestration\ModerationRunner;
 use Goodport\AutoModerator\Profiles\ProfileResolver;
+use Goodport\AutoModerator\Support\ModerationResultHandlerRegistry;
+use Goodport\AutoModerator\Support\ModerationRunForgetter;
 use Illuminate\Support\ServiceProvider;
 
 final class AutoModeratorServiceProvider extends ServiceProvider
@@ -18,6 +22,10 @@ final class AutoModeratorServiceProvider extends ServiceProvider
         $this->app->singleton(ProfileResolver::class);
         $this->app->singleton(ModerationRunner::class);
         $this->app->singleton(ModerationCaseRunner::class);
+        $this->app->singleton(ModerationOutcomeReader::class);
+        $this->app->singleton(ModerationResultHandlerRegistry::class);
+        $this->app->singleton(ModerationDispatcher::class);
+        $this->app->singleton(ModerationRunForgetter::class);
         $this->app->singleton(AutoModeratorManager::class);
     }
 

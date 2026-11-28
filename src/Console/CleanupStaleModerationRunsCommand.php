@@ -10,6 +10,8 @@ use Illuminate\Contracts\Config\Repository;
 
 /**
  * Marks background runs that stayed running for too long as failed.
+ *
+ * @internal
  */
 final class CleanupStaleModerationRunsCommand extends Command
 {

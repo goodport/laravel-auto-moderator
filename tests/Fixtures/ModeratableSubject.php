@@ -2,13 +2,16 @@
 
 namespace Goodport\AutoModerator\Tests\Fixtures;
 
+use Goodport\AutoModerator\Concerns\HasModerationRuns;
 use Goodport\AutoModerator\Contracts\Moderatable;
 use Goodport\AutoModerator\Moderation\ModerationField;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
 
-final class ModeratableSubject extends Model implements Moderatable
+class ModeratableSubject extends Model implements Moderatable
 {
+    use HasModerationRuns;
+
     protected $table = 'moderatable_subjects';
 
     /**

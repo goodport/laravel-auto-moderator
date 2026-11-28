@@ -9,6 +9,8 @@ use Illuminate\Database\Eloquent\Relations\MorphTo;
 
 /**
  * One background moderation attempt for a model.
+ *
+ * @internal
  */
 final class ModerationRun extends Model
 {
@@ -22,6 +24,7 @@ final class ModerationRun extends Model
         return [
             'status' => ModerationRunStatus::class,
             'context' => 'array',
+            'field_labels' => 'array',
             'started_at' => 'datetime',
             'finished_at' => 'datetime',
         ];
@@ -34,6 +37,6 @@ final class ModerationRun extends Model
 
     public function results(): HasMany
     {
-        return $this->hasMany(ModerationResult::class, 'moderation_run_id');
+        return $this->hasMany(ModerationResult::class, 'moderation_run_id')->orderBy('id');
     }
 }

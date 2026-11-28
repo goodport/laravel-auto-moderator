@@ -3,7 +3,6 @@
 namespace Goodport\AutoModerator\Tests\Feature\Background;
 
 use Goodport\AutoModerator\Events\ModerationCompleted;
-use Goodport\AutoModerator\Exceptions\InvalidConfigurationException;
 use Goodport\AutoModerator\Jobs\RunModerationJob;
 use Goodport\AutoModerator\Models\ModerationRun;
 use Goodport\AutoModerator\Moderation\ModerationRunStatus;
@@ -38,7 +37,7 @@ final class RunModerationJobTest extends BackgroundTestCase
             actorId: 5,
         );
 
-        $this->handle($this->job($subject));
+        $this->handle($this->moderationJob($subject));
 
         $run = ModerationRun::query()->sole();
 
@@ -84,10 +83,10 @@ final class RunModerationJobTest extends BackgroundTestCase
     {
         $this->registerProfile('reject', RejectingCheck::class);
         $subject = $this->createSubject(fields: [
-            $this->field('body', 'Body', 'reject', 'Body'),
+            $this->moderationField('body', 'Body', 'reject', 'Body'),
         ]);
 
-        $this->handle($this->job($subject));
+        $this->handle($this->moderationJob($subject));
 
         $run = ModerationRun::query()->sole();
         $this->assertSame(ModerationRunStatus::Rejected, $run->status);
@@ -107,10 +106,10 @@ final class RunModerationJobTest extends BackgroundTestCase
     {
         $this->registerProfile('throw', ThrowingCheck::class);
         $subject = $this->createSubject(fields: [
-            $this->field('body', 'Body', 'throw', 'Body'),
+            $this->moderationField('body', 'Body', 'throw', 'Body'),
         ]);
 
-        $this->handle($this->job($subject));
+        $this->handle($this->moderationJob($subject));
 
         $run = ModerationRun::query()->sole();
         $this->assertSame(ModerationRunStatus::NeedsReview, $run->status);
@@ -128,10 +127,10 @@ final class RunModerationJobTest extends BackgroundTestCase
     public function test_empty_field_produces_skipped_run_without_results(): void
     {
         $subject = $this->createSubject(fields: [
-            $this->field('body', 'Body', 'missing', '   '),
+            $this->moderationField('body', 'Body', 'missing', '   '),
         ]);
 
-        $this->handle($this->job($subject));
+        $this->handle($this->moderationJob($subject));
 
         $run = ModerationRun::query()->sole();
         $this->assertSame(ModerationRunStatus::Skipped, $run->status);
@@ -156,10 +155,10 @@ final class RunModerationJobTest extends BackgroundTestCase
             ],
         ]);
         $subject = $this->createSubject(fields: [
-            $this->field('body', 'Body', 'disabled', 'Body'),
+            $this->moderationField('body', 'Body', 'disabled', 'Body'),
         ]);
 
-        $this->handle($this->job($subject));
+        $this->handle($this->moderationJob($subject));
 
         $run = ModerationRun::query()->sole();
         $this->assertSame(ModerationRunStatus::Skipped, $run->status);
@@ -177,11 +176,11 @@ final class RunModerationJobTest extends BackgroundTestCase
         $this->registerProfile('throw', ThrowingCheck::class);
         $this->registerProfile('reject', RejectingCheck::class);
         $subject = $this->createSubject(fields: [
-            $this->field('body', 'Body', 'throw', 'Body'),
-            $this->field('comment', 'Comment', 'reject', 'Comment'),
+            $this->moderationField('body', 'Body', 'throw', 'Body'),
+            $this->moderationField('comment', 'Comment', 'reject', 'Comment'),
         ]);
 
-        $this->handle($this->job($subject));
+        $this->handle($this->moderationJob($subject));
 
         $run = ModerationRun::query()->sole();
         $this->assertSame(ModerationRunStatus::Rejected, $run->status);
@@ -196,12 +195,12 @@ final class RunModerationJobTest extends BackgroundTestCase
     {
         $this->registerProfile('pass', PassingCheck::class);
         $subject = $this->createSubject(
-            fields: [$this->field('body', 'Body', 'pass', 'Body')],
+            fields: [$this->moderationField('body', 'Body', 'pass', 'Body')],
             scenario: 'actual_scenario',
         );
         Event::fake([ModerationCompleted::class]);
 
-        $this->assertJobFails($this->job($subject, 'expected_scenario'));
+        $this->assertJobFails($this->moderationJob($subject, 'expected_scenario'));
 
         $run = ModerationRun::query()->sole();
         $this->assertSame(ModerationRunStatus::Failed, $run->status);
@@ -219,11 +218,11 @@ final class RunModerationJobTest extends BackgroundTestCase
     public function test_unknown_profile_fails_run(): void
     {
         $subject = $this->createSubject(fields: [
-            $this->field('body', 'Body', 'missing', 'Body'),
+            $this->moderationField('body', 'Body', 'missing', 'Body'),
         ]);
         Event::fake([ModerationCompleted::class]);
 
-        $this->assertJobFails($this->job($subject));
+        $this->assertJobFails($this->moderationJob($subject));
 
         $run = ModerationRun::query()->sole();
         $this->assertSame(ModerationRunStatus::Failed, $run->status);
@@ -271,7 +270,7 @@ final class RunModerationJobTest extends BackgroundTestCase
         Relation::morphMap(['moderatable_subject' => ModeratableSubject::class]);
         $this->registerProfile('pass', PassingCheck::class);
         $subject = $this->createSubject(fields: [
-            $this->field('body', 'Body', 'pass', 'Body'),
+            $this->moderationField('body', 'Body', 'pass', 'Body'),
         ]);
 
         $this->handle(new RunModerationJob('moderatable_subject', $subject->getKey(), 'subject_scenario'));
@@ -288,11 +287,11 @@ final class RunModerationJobTest extends BackgroundTestCase
     {
         $this->registerProfile('pass', PassingCheck::class);
         $subject = $this->createSubject(fields: [
-            $this->field('body', 'Body', 'pass', 'Body'),
+            $this->moderationField('body', 'Body', 'pass', 'Body'),
         ]);
         Event::fake([ModerationCompleted::class]);
 
-        $this->handle($this->job($subject));
+        $this->handle($this->moderationJob($subject));
 
         Event::assertDispatched(ModerationCompleted::class, function (ModerationCompleted $event): bool {
             return $event->run->status === ModerationRunStatus::Approved
@@ -318,10 +317,10 @@ final class RunModerationJobTest extends BackgroundTestCase
     {
         $this->registerProfile('pass', PassingCheck::class);
         $subject = $this->createSubject(fields: [
-            $this->field('body', 'Body', 'pass', 'Body'),
+            $this->moderationField('body', 'Body', 'pass', 'Body'),
         ]);
 
-        $this->handle($this->job($subject));
+        $this->handle($this->moderationJob($subject));
 
         $this->assertSame(1, DB::table('moderatable_subjects')->count());
         $this->assertSame(1, DB::table('auto_moderator_runs')->count());
@@ -333,39 +332,5 @@ final class RunModerationJobTest extends BackgroundTestCase
             $subject->updated_at->toDateTimeString(),
             $fresh->updated_at->toDateTimeString(),
         );
-    }
-
-    /**
-     * @param  array{key: string, label: string, profile: string, input: array<string, mixed>}  $field
-     * @return array{key: string, label: string, profile: string, input: array<string, mixed>}
-     */
-    private function field(string $key, string $label, string $profile, string $text): array
-    {
-        return [
-            'key' => $key,
-            'label' => $label,
-            'profile' => $profile,
-            'input' => ['text' => $text],
-        ];
-    }
-
-    private function job(ModeratableSubject $subject, ?string $scenario = null): RunModerationJob
-    {
-        return new RunModerationJob(
-            morphType: $subject->getMorphClass(),
-            morphId: $subject->getKey(),
-            scenario: $scenario ?? $subject->moderationScenario(),
-        );
-    }
-
-    private function assertJobFails(RunModerationJob $job): void
-    {
-        try {
-            $this->handle($job);
-        } catch (InvalidConfigurationException) {
-            return;
-        }
-
-        $this->fail('The moderation job must throw a configuration exception.');
     }
 }

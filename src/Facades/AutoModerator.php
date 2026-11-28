@@ -8,6 +8,12 @@ use Illuminate\Support\Facades\Facade;
 /**
  * @method static \Goodport\AutoModerator\PendingProfile profile(string $profile)
  * @method static \Goodport\AutoModerator\PendingModerationCase moderationCase()
+ * @method static void dispatch(\Illuminate\Database\Eloquent\Model $model, ?int $delaySeconds = null)
+ * @method static \Goodport\AutoModerator\Moderation\ModerationOutcome|null latest(\Illuminate\Database\Eloquent\Model $model, ?string $scenario = null)
+ * @method static array<int|string, \Goodport\AutoModerator\Moderation\ModerationOutcome> latestFor(iterable $models, ?string $scenario = null)
+ * @method static array<int, string> statuses()
+ * @method static void registerHandler(string $modelClass, string $handlerClass)
+ * @method static void forget(\Illuminate\Database\Eloquent\Model $model)
  *
  * @see AutoModeratorManager
  */

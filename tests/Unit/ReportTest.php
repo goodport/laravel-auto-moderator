@@ -149,6 +149,26 @@ final class ReportTest extends TestCase
     }
 
     /**
+     * An empty reason falls back to the technical error.
+     */
+    public function test_empty_reason_falls_back_to_error(): void
+    {
+        $report = new Report([
+            'check' => new CheckResult(
+                check: 'check',
+                state: ModerationState::Undecided,
+                reason: '',
+                findings: [],
+                details: [],
+                error: 'Technical failure.',
+            ),
+        ]);
+
+        $this->assertSame('Technical failure.', $report->firstReason());
+        $this->assertSame(['check' => 'Technical failure.'], $report->messages());
+    }
+
+    /**
      * The array representation includes every report section.
      */
     public function test_to_array(): void

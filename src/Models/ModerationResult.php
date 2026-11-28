@@ -8,6 +8,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
  * One check result saved by a background moderation run.
+ *
+ * @internal
  */
 final class ModerationResult extends Model
 {

@@ -11,7 +11,10 @@ use Goodport\AutoModerator\Models\ModerationRun;
 use Goodport\AutoModerator\Moderation\AuditContext;
 use Goodport\AutoModerator\Moderation\Finding;
 use Goodport\AutoModerator\Moderation\ModerationCaseResult;
+use Goodport\AutoModerator\Moderation\ModerationField;
+use Goodport\AutoModerator\Moderation\ModerationOutcomeReader;
 use Goodport\AutoModerator\Moderation\ModerationRunStatus;
+use Goodport\AutoModerator\Support\ModerationResultHandlerRegistry;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -24,6 +27,8 @@ use Throwable;
 
 /**
  * Runs and stores one background moderation attempt.
+ *
+ * @internal
  */
 final class RunModerationJob implements ShouldBeUnique, ShouldQueue
 {
@@ -56,8 +61,11 @@ final class RunModerationJob implements ShouldBeUnique, ShouldQueue
         return $seconds;
     }
 
-    public function handle(AutoModeratorManager $autoModerator): void
-    {
+    public function handle(
+        AutoModeratorManager $autoModerator,
+        ModerationOutcomeReader $outcomes,
+        ModerationResultHandlerRegistry $handlers,
+    ): void {
         $model = $this->findModeratable();
 
         if ($model === null) {
@@ -73,6 +81,8 @@ final class RunModerationJob implements ShouldBeUnique, ShouldQueue
 
             throw $exception;
         }
+
+        $handlers->handle($model, $outcomes->fromRun($completed));
 
         event(new ModerationCompleted($completed));
     }
@@ -115,14 +125,21 @@ final class RunModerationJob implements ShouldBeUnique, ShouldQueue
 
         $language = $model->moderationLanguage();
         $audit = AuditContext::fromActorAndSubject($model->moderationActor(), $model);
+        $fields = $model->moderationFields();
+        $fieldLabels = [];
 
+        foreach ($fields as $field) {
+            $fieldLabels[$field->key] = $field->label;
+        }
+
+        $run->field_labels = $fieldLabels;
         $run->context = [
             'language' => $language,
             'audit' => $audit->toArray(),
         ];
         $run->save();
 
-        $caseResult = $this->runCase($autoModerator, $model, $language, $audit);
+        $caseResult = $this->runCase($autoModerator, $fields, $language, $audit);
 
         DB::transaction(function () use ($run, $caseResult): void {
             $this->saveResults($run, $caseResult);
@@ -136,9 +153,12 @@ final class RunModerationJob implements ShouldBeUnique, ShouldQueue
         return $run->load('results');
     }
 
+    /**
+     * @param  array<int, ModerationField>  $fields
+     */
     private function runCase(
         AutoModeratorManager $autoModerator,
-        Model&Moderatable $model,
+        array $fields,
         ?string $language,
         AuditContext $audit,
     ): ModerationCaseResult {
@@ -148,7 +168,7 @@ final class RunModerationJob implements ShouldBeUnique, ShouldQueue
             $case->language($language);
         }
 
-        foreach ($model->moderationFields() as $field) {
+        foreach ($fields as $field) {
             $case->field($field->key, $field->label, $field->profile, $field->input);
         }
 

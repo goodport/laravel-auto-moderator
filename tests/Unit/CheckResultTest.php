@@ -46,6 +46,23 @@ final class CheckResultTest extends TestCase
     }
 
     /**
+     * An error is allowed only for the undecided state.
+     */
+    public function test_error_is_only_allowed_for_undecided(): void
+    {
+        $this->expectException(InvalidCheckResultException::class);
+
+        new CheckResult(
+            'check',
+            ModerationState::Passed,
+            null,
+            [],
+            [],
+            'Technical failure.',
+        );
+    }
+
+    /**
      * Only a rejected result may contain a blocking finding.
      */
     public function test_undecided_cannot_have_blocking_finding(): void

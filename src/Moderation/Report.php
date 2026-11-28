@@ -2,8 +2,10 @@
 
 namespace Goodport\AutoModerator\Moderation;
 
+use Goodport\AutoModerator\Support\ModerationValue;
+
 /**
- * Aggregated result of a moderation profile.
+ * Aggregated result of a profile run.
  */
 final readonly class Report
 {
@@ -67,7 +69,7 @@ final readonly class Report
                 continue;
             }
 
-            $reason = $result->reason ?? $result->error;
+            $reason = ModerationValue::firstNonEmpty($result->reason, $result->error);
 
             if ($reason !== null) {
                 return $reason;
@@ -91,7 +93,7 @@ final readonly class Report
                 continue;
             }
 
-            $message = $result->reason ?? $result->error;
+            $message = ModerationValue::firstNonEmpty($result->reason, $result->error);
 
             if ($message !== null) {
                 $messages[$check] = $message;
